@@ -1647,12 +1647,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         return bool(self.roi_locked[t])
 
     def _update_roi_lock_ui(self):
+        if not hasattr(self, "btn_roi_lock"):
+            return
         t = int(self.slider.value()) - 1
         locked = self._is_roi_locked(t)
         self.btn_roi_lock.setText("Lock ROI: ON" if locked else "Lock ROI: OFF")
         self._update_lock_label_visibility()
 
     def toggle_roi_lock(self):
+        if not hasattr(self, "btn_roi_lock"):
+            return
         t = int(self.slider.value()) - 1
         if t < 0 or t >= self.Nt:
             return
