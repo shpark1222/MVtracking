@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Optional
+from typing import Optional, List
 
 from PySide6 import QtWidgets
 import pyqtgraph as pg
@@ -21,6 +21,46 @@ def _select_work_folder() -> Optional[str]:
     return None
 
 
+def _find_mvpack_candidates(folder: str) -> List[str]:
+    candidates = []
+    direct = os.path.join(folder, "mvpack.h5")
+    if os.path.exists(direct):
+        candidates.append(direct)
+
+    for root, _, files in os.walk(folder):
+        for name in files:
+            if not name.lower().endswith(".h5"):
+                continue
+            if "mvpack" not in name.lower():
+                continue
+            candidates.append(os.path.join(root, name))
+
+    unique = sorted(set(candidates), key=lambda p: (len(p), p))
+    return unique
+
+
+def _select_mvpack_path(folder: str) -> str:
+    candidates = _find_mvpack_candidates(folder)
+    if not candidates:
+        return find_mvpack_in_folder(folder)
+    if len(candidates) == 1:
+        return candidates[0]
+
+    choices = [os.path.relpath(p, folder) for p in candidates]
+    choice, ok = QtWidgets.QInputDialog.getItem(
+        None,
+        "Select mvpack",
+        "Select an mvpack file to load:",
+        choices,
+        0,
+        False,
+    )
+    if not ok or not choice:
+        raise FileNotFoundError("No mvpack selected.")
+    idx = choices.index(choice)
+    return candidates[idx]
+
+
 def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     pg.setConfigOptions(imageAxisOrder="row-major")
@@ -31,7 +71,7 @@ def main() -> None:
         return
 
     try:
-        mvpack_path = find_mvpack_in_folder(folder)
+        mvpack_path = _select_mvpack_path(folder)
     except Exception as exc:
         QtWidgets.QMessageBox.critical(None, "MV tracker", f"mvpack.h5 not found:\n{exc}")
         return

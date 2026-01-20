@@ -21,8 +21,8 @@ def _unit(v):
 
 
 def infer_axis_map_from_iop_ipp(iop6, ipps=None):
-    col = _unit(iop6[:3])
-    row = _unit(iop6[3:])
+    row = _unit(iop6[:3])
+    col = _unit(iop6[3:])
     slc = _unit(np.cross(row, col))
 
     if ipps is not None and len(ipps) >= 2:
@@ -43,26 +43,6 @@ def _to_jsonable(x):
     if isinstance(x, dict):
         return {k: _to_jsonable(v) for k, v in x.items()}
     return x
-
-
-def axis_dir_label(vec, lps_to_ras=False):
-    axes = ["X", "Y", "Z"]
-    vec = np.asarray(vec, float).reshape(3)
-    if lps_to_ras:
-        vec = vec.copy()
-        vec[0] *= -1
-        vec[1] *= -1
-    idx = int(np.argmax(np.abs(vec)))
-    sign = "+" if vec[idx] >= 0 else "-"
-    return f"{axes[idx]}{sign}"
-
-
-def axis_map_summary(axis_map, lps_to_ras=False):
-    return {
-        "Rows": axis_dir_label(axis_map["Rows"], lps_to_ras=lps_to_ras),
-        "Columns": axis_dir_label(axis_map["Columns"], lps_to_ras=lps_to_ras),
-        "Slices": axis_dir_label(axis_map["Slices"], lps_to_ras=lps_to_ras),
-    }
 
 
 # ============================
@@ -100,8 +80,8 @@ def estimate_volume_geom(folder):
     iop = np.array(ds0.ImageOrientationPatient, float)
     ps = np.array(ds0.PixelSpacing, float)
 
-    col = _unit(iop[:3])
-    row = _unit(iop[3:])
+    row = _unit(iop[:3])
+    col = _unit(iop[3:])
 
     slc = np.cross(row, col)
     nslc = np.linalg.norm(slc)
@@ -136,20 +116,12 @@ def estimate_volume_geom(folder):
             "(check IOP / IPP / slice spacing)"
         )
 
-    order = np.argsort(proj)
-    slice_positions = proj[order]
-
     return {
         "orgn4": orgn4,
         "A": A,
         "PixelSpacing": ps,
         "sliceStep": np.array([dz]),
         "axis_map": infer_axis_map_from_iop_ipp(iop, ipps),
-        "IOP": iop,
-        "IPP0": orgn4,
-        "IPPs": ipps,
-        "slice_positions": slice_positions,
-        "slice_order": order,
     }
 
 
@@ -212,7 +184,6 @@ class PackBuilder(QtWidgets.QWidget):
         self.mr = ""
         self.dcm4d = ""
         self.cines = []
-        self._last_dir = os.getcwd()
 
         self.btn_mr = QtWidgets.QPushButton("Select mrStruct folder")
         self.lbl_mr = QtWidgets.QLabel("mrStruct: -")
@@ -250,27 +221,24 @@ class PackBuilder(QtWidgets.QWidget):
         self.logbox.appendPlainText(s)
 
     def sel_mr(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select mrStruct folder", self._last_dir)
+        d = QtWidgets.QFileDialog.getExistingDirectory(self)
         if d:
             self.mr = d
-            self._last_dir = d
             self.lbl_mr.setText(f"mrStruct: {d}")
 
     def sel_4d(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Select 4D DICOM folder", self._last_dir)
+        d = QtWidgets.QFileDialog.getExistingDirectory(self)
         if d:
             self.dcm4d = d
-            self._last_dir = d
             self.lbl_4d.setText(f"4D DICOM: {d}")
 
     def add_cine(self):
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Add cine folder", self._last_dir)
+        d = QtWidgets.QFileDialog.getExistingDirectory(self)
         if not d:
             return
         tag, ok = QtWidgets.QInputDialog.getText(self, "cine tag", "2CH / 3CH / 4CH")
         if ok:
             self.cines.append((tag, d))
-            self._last_dir = d
             self.lst_cine.addItem(f"{tag}: {d}")
 
     def build(self):
@@ -290,25 +258,12 @@ class PackBuilder(QtWidgets.QWidget):
             geom["PixelSpacing"][0],
             geom["sliceStep"][0],
         )
-        geom_axes = axis_map_summary(geom["axis_map"], lps_to_ras=True)
-        self.log(
-            "4D DICOM axes: "
-            f"Rows={geom_axes['Rows']} Columns={geom_axes['Columns']} Slices={geom_axes['Slices']}"
-        )
 
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save mvpack",
-            os.path.join(self._last_dir, "mvpack.h5"),
-            "HDF5 Files (*.h5)",
-        )
-        if not out_path:
+        out = QtWidgets.QFileDialog.getExistingDirectory(self)
+        if not out:
             return
-        out_dir = os.path.dirname(out_path)
-        if out_dir:
-            self._last_dir = out_dir
 
-        with h5py.File(out_path, "w") as f:
+        with h5py.File(os.path.join(out, "mvpack.h5"), "w") as f:
             g = f.create_group("data")
             g["vel"] = vel
             g["mag"] = mag
@@ -322,20 +277,10 @@ class PackBuilder(QtWidgets.QWidget):
             gg["PixelSpacing"] = geom["PixelSpacing"]
             gg["sliceStep"] = geom["sliceStep"]
             gg.attrs["axis_map_json"] = json.dumps(_to_jsonable(geom["axis_map"]))
-            gg["IOP"] = geom["IOP"]
-            gg["IPP0"] = geom["IPP0"]
-            gg["IPPs"] = geom["IPPs"]
 
             gc = f.create_group("cine")
             for tag, folder in self.cines:
                 cine, meta = read_cine(folder)
-                cine_axes = axis_map_summary(meta["axis_map"], lps_to_ras=True)
-                self.log(
-                    "cine meta "
-                    f"{tag}: IOP={np.array2string(meta['IOP'], precision=6, separator=',')}, "
-                    f"IPP={np.array2string(meta['IPP'], precision=6, separator=',')}, "
-                    f"Rows={cine_axes['Rows']} Columns={cine_axes['Columns']} Slices={cine_axes['Slices']}"
-                )
                 gt = gc.create_group(tag)
                 gt["cineI"] = cine
                 gt["IPP"] = meta["IPP"]

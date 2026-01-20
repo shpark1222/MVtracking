@@ -9,7 +9,7 @@ from scipy.ndimage import map_coordinates
 
 from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
 from stl_conversion import convert_plane_to_stl
-from mvpack_io import MVPack, CineGeom
+from mvpack_io import MVPack, CineGeom, load_mvpack_h5
 from plot_widgets import PlotCanvas, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
@@ -83,6 +83,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.lock_label_vel = None
         self._restored_state = False
         self._cine_display_maps: Dict[str, Tuple[Tuple[int, int], np.ndarray, np.ndarray]] = {}
+        self._child_windows = []
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -101,6 +102,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.cine_line_rois: Dict[str, pg.LineSegmentROI] = {}
 
         left_box = QtWidgets.QVBoxLayout()
+
+        self.btn_load_mvpack = QtWidgets.QPushButton("Load mvpack")
+        left_box.addWidget(self.btn_load_mvpack)
 
         self.cine_selector = QtWidgets.QComboBox()
         left_box.addWidget(self.cine_selector)
@@ -466,6 +470,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         cine_xform_row.addStretch(1)
         left_box.addLayout(cine_xform_row)
         self.btn_cine_apply.clicked.connect(self.on_cine_transform_changed)
+        self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
 
         # try restore MVtrack.h5
         if restore_state:
@@ -479,6 +484,67 @@ class ValveTracker(QtWidgets.QMainWindow):
     # ============================
     # Restore state
     # ============================
+    def _prompt_mvtrack(self, folder: str) -> Tuple[Optional[str], bool]:
+        mvtrack_candidates = find_mvtrack_files(folder)
+        tracking_path = None
+        restore_state = False
+
+        if mvtrack_candidates:
+            mvtrack_candidates = sorted(
+                mvtrack_candidates,
+                key=lambda p: os.path.getmtime(p),
+                reverse=True,
+            )
+
+            choices = ["(new tracking)"] + [os.path.basename(p) for p in mvtrack_candidates]
+            default_index = 1
+
+            choice, ok = QtWidgets.QInputDialog.getItem(
+                self,
+                "Select MVtrack",
+                "Select an existing MVtrack file to load:",
+                choices,
+                default_index,
+                False,
+            )
+
+            if ok and choice and choice != "(new tracking)":
+                for p in mvtrack_candidates:
+                    if os.path.basename(p) == choice:
+                        tracking_path = p
+                        restore_state = True
+                        break
+
+        return tracking_path, restore_state
+
+    def on_load_mvpack(self):
+        mvpack_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select mvpack.h5",
+            self.work_folder,
+            "HDF5 Files (*.h5)",
+        )
+        if not mvpack_path:
+            return
+        try:
+            pack = load_mvpack_h5(mvpack_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "MV tracker", f"Failed to load mvpack:\n{exc}")
+            return
+
+        folder = os.path.dirname(mvpack_path)
+        tracking_path, restore_state = self._prompt_mvtrack(folder)
+        new_window = ValveTracker(
+            pack,
+            work_folder=folder,
+            tracking_path=tracking_path,
+            restore_state=restore_state,
+        )
+        new_window.resize(self.width(), self.height())
+        new_window.show()
+        self._child_windows.append(new_window)
+        self.close()
+
     def try_restore_state(self):
         st_path = self.tracking_path or mvtrack_path_for_folder(self.work_folder)
         if not os.path.exists(st_path):
