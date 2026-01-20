@@ -34,6 +34,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.work_folder = work_folder
         self.tracking_path = tracking_path
 
+        self._base_pcmra = pack.pcmra.copy()
+        self._base_vel = pack.vel.copy()
+        self._base_ke = pack.ke.copy() if pack.ke is not None else None
+        self._base_vortmag = pack.vortmag.copy() if pack.vortmag is not None else None
+        self._base_orgn4 = pack.geom.orgn4.copy()
+        self._base_A = pack.geom.A.copy()
+
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
 
@@ -462,6 +469,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         if restore_state:
             self.try_restore_state()
 
+        self._emit_geometry_debug()
+
         self._update_cine_roi_visibility()
         self.set_phase(0)
 
@@ -614,23 +623,23 @@ class ValveTracker(QtWidgets.QMainWindow):
                     out = np.flip(out, axis=axis)
             return out
 
-        self.pack.pcmra = _permute_volume(self.pack.pcmra)
-        self.pack.vel = _permute_volume(self.pack.vel)
-        if self.pack.ke is not None:
-            self.pack.ke = _permute_volume(self.pack.ke)
-        if self.pack.vortmag is not None:
-            self.pack.vortmag = _permute_volume(self.pack.vortmag)
+        self.pack.pcmra = _permute_volume(self._base_pcmra)
+        self.pack.vel = _permute_volume(self._base_vel)
+        if self._base_ke is not None:
+            self.pack.ke = _permute_volume(self._base_ke)
+        if self._base_vortmag is not None:
+            self.pack.vortmag = _permute_volume(self._base_vortmag)
 
         Ny, Nx, Nz = self.pack.pcmra.shape[:3]
-        row_vec = self.pack.geom.A[:, 1].copy()
-        col_vec = self.pack.geom.A[:, 0].copy()
-        slc_vec = self.pack.geom.A[:, 2].copy()
+        row_vec = self._base_A[:, 1].copy()
+        col_vec = self._base_A[:, 0].copy()
+        slc_vec = self._base_A[:, 2].copy()
         basis = [row_vec, col_vec, slc_vec]
         new_row = basis[perm[0]]
         new_col = basis[perm[1]]
         new_slc = basis[perm[2]]
 
-        orgn4 = self.pack.geom.orgn4.copy()
+        orgn4 = self._base_orgn4.copy()
         if flips[0] < 0:
             orgn4 = orgn4 + new_row * (Ny - 1)
             new_row = -new_row
@@ -643,6 +652,11 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.pack.geom.orgn4 = orgn4
         self.pack.geom.A = np.column_stack([new_col, new_row, new_slc])
+        print(
+            f"[mvtracking] flip/swap perm={perm} flips={flips.tolist()} "
+            f"orgn4={np.array2string(orgn4, precision=4, separator=',')} "
+            f"A0={np.array2string(self.pack.geom.A[:, 0], precision=4, separator=',')}"
+        )
 
     def on_cine_transform_changed(self):
         self._apply_volume_transform()
@@ -846,6 +860,34 @@ class ValveTracker(QtWidgets.QMainWindow):
         if view is None or chk is None:
             return
         view.setVisible(bool(chk.isChecked()))
+
+    def _emit_geometry_debug(self):
+        geom = self.pack.geom
+        axis_map = geom.axis_map if geom.axis_map is not None else {}
+        print(
+            "[mvtracking] geom axis_map="
+            f"{axis_map} orgn4={np.array2string(geom.orgn4, precision=4, separator=',')} "
+            f"A0={np.array2string(geom.A[:, 0], precision=4, separator=',')}"
+        )
+        if geom.slice_order is not None:
+            order = geom.slice_order
+            print(f"[mvtracking] slice_order first/last={int(order[0])}/{int(order[-1])}")
+        if geom.slice_positions is not None:
+            sp = geom.slice_positions
+            print(f"[mvtracking] slice_positions first/last={float(sp[0]):.4f}/{float(sp[-1]):.4f}")
+
+        if self.active_cine_key in self.pack.cine_planes:
+            cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+            col_vec = cine_geom.iop[:3]
+            row_vec = cine_geom.iop[3:6]
+            normal_vec = np.cross(row_vec, col_vec)
+            nn = np.linalg.norm(normal_vec)
+            normal_vec = normal_vec / (nn if nn > 0 else 1e-12)
+            print(
+                "[mvtracking] cine axis_map="
+                f"{self.pack.cine_planes[self.active_cine_key]['geom'].axis_map} "
+                f"normal={np.array2string(normal_vec, precision=4, separator=',')}"
+            )
 
     # ============================
     # Phase update

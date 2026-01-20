@@ -296,16 +296,19 @@ class PackBuilder(QtWidgets.QWidget):
             f"Rows={geom_axes['Rows']} Columns={geom_axes['Columns']} Slices={geom_axes['Slices']}"
         )
 
-        out = QtWidgets.QFileDialog.getExistingDirectory(
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            "Select output folder",
-            self._last_dir,
+            "Save mvpack",
+            os.path.join(self._last_dir, "mvpack.h5"),
+            "HDF5 Files (*.h5)",
         )
-        if not out:
+        if not out_path:
             return
-        self._last_dir = out
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            self._last_dir = out_dir
 
-        with h5py.File(os.path.join(out, "mvpack.h5"), "w") as f:
+        with h5py.File(out_path, "w") as f:
             g = f.create_group("data")
             g["vel"] = vel
             g["mag"] = mag

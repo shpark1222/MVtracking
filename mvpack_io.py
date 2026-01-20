@@ -194,8 +194,9 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 vortmag = vortmag[:, :, order, :].astype(np.float32)
             if geom_ipps is not None and geom_ipps.shape[0] == geom_slice_order.size:
                 geom_ipp0 = geom_ipps[order[0]].reshape(3)
+                orgn4 = geom_ipp0.copy()
             if geom_slice_positions is not None and geom_slice_positions.size == geom_slice_order.size:
-                geom_slice_positions = geom_slice_positions.copy()
+                geom_slice_positions = geom_slice_positions[order]
 
         ke = None
         ke_path = _first_existing_path(f, ["/data/ke"])
