@@ -373,6 +373,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         paste_action.triggered.connect(self.paste_roi_state)
         self.addAction(paste_action)
 
+        line_copy_action = QtGui.QAction(self)
+        line_copy_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+C"))
+        line_copy_action.triggered.connect(self.copy_line_state)
+        self.addAction(line_copy_action)
+
+        line_paste_action = QtGui.QAction(self)
+        line_paste_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+V"))
+        line_paste_action.triggered.connect(self.paste_line_state)
+        self.addAction(line_paste_action)
+
+
         # slider
         self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.slider.setMinimum(1)
@@ -416,6 +427,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
         self.btn_plane_overlay.clicked.connect(self.show_plane_overlay)
+
+        for btn in (
+            self.btn_roi_copy,
+            self.btn_roi_paste,
+            self.btn_roi_forward,
+            self.btn_line_copy,
+            self.btn_line_paste,
+            self.btn_line_forward,
+        ):
+            btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         cine_xform_row = QtWidgets.QHBoxLayout()
         cine_xform_row.addWidget(QtWidgets.QLabel("Flip"))
