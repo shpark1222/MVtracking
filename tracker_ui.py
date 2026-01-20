@@ -605,14 +605,15 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def _volume_axis_permutation(self) -> Tuple[int, int, int]:
         mapping = {
-            "X Y Z": (0, 1, 2),
-            "X Z Y": (0, 2, 1),
-            "Y X Z": (1, 0, 2),
-            "Y Z X": (1, 2, 0),
-            "Z X Y": (2, 0, 1),
-            "Z Y X": (2, 1, 0),
+            "XYZ": (0, 1, 2),
+            "XZY": (0, 2, 1),
+            "YXZ": (1, 0, 2),
+            "YZX": (1, 2, 0),
+            "ZXY": (2, 0, 1),
+            "ZYX": (2, 1, 0),
         }
-        return mapping.get(self.cine_swap_selector.currentText(), (0, 1, 2))
+        key = self.cine_swap_selector.currentText().replace(" ", "")
+        return mapping.get(key, (0, 1, 2))
 
     def _volume_axis_flips(self) -> np.ndarray:
         return np.array(
