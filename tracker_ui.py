@@ -646,10 +646,12 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def on_cine_transform_changed(self):
         self._apply_volume_transform()
-        if self._cur_phase is not None:
-            cur = self._cur_phase
-            self._cur_phase = None
-            self.set_phase(cur)
+        self._view_ranges["pcmra"] = None
+        self._view_ranges["vel"] = None
+        cur = int(self.slider.value()) - 1
+        cur = int(np.clip(cur, 0, self.Nt - 1))
+        self._cur_phase = None
+        self.set_phase(cur)
 
     def copy_line_state(self):
         t = int(self.slider.value()) - 1
