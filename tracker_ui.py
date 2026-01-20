@@ -5,8 +5,9 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph as pg
+from scipy.ndimage import map_coordinates
 
-from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz
+from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
 from stl_conversion import convert_plane_to_stl
 from mvpack_io import MVPack, CineGeom
 from plot_widgets import PlotCanvas, _WheelToSliderFilter
@@ -81,6 +82,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.lock_label_pcm = None
         self.lock_label_vel = None
         self._restored_state = False
+        self._cine_display_maps: Dict[str, Tuple[Tuple[int, int], np.ndarray, np.ndarray]] = {}
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -568,8 +570,27 @@ class ValveTracker(QtWidgets.QMainWindow):
     # ============================
     # Cine helpers
     # ============================
+    def _get_cine_display_map(self, cine_key: str, shape: Tuple[int, int]) -> Tuple[np.ndarray, np.ndarray]:
+        cache = self._cine_display_maps.get(cine_key)
+        if cache is not None and cache[0] == shape:
+            return cache[1], cache[2]
+        cine_geom = self._get_cine_geom_raw(cine_key)
+        rowq, colq = cine_display_mapping(cine_geom, shape)
+        self._cine_display_maps[cine_key] = (shape, rowq, colq)
+        return rowq, colq
+
     def _get_cine_frame(self, cine_key: str, t: int) -> np.ndarray:
-        return self._get_cine_frame_raw(cine_key, t)
+        img_raw = self._get_cine_frame_raw(cine_key, t)
+        rowq, colq = self._get_cine_display_map(cine_key, img_raw.shape)
+        coords = np.vstack([rowq.ravel(), colq.ravel()])
+        img_disp = map_coordinates(
+            img_raw.astype(np.float32),
+            coords,
+            order=1,
+            mode="constant",
+            cval=0.0,
+        ).reshape(img_raw.shape)
+        return img_disp
 
     def _get_cine_frame_raw(self, cine_key: str, t: int) -> np.ndarray:
         cine = self.pack.cine_planes[cine_key]["img"]
@@ -805,7 +826,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.line_norm[t] = self._default_line_norm()
             line_xy = self._norm_to_abs_line(self.line_norm[t], H_raw, W_raw)
             cine_geom = self._get_cine_geom_raw(cine_key)
-            patient_xyz = cine_line_to_patient_xyz(line_xy, cine_geom)
+            patient_xyz = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=(H_raw, W_raw))
             vox = self._patient_to_voxel(patient_xyz)
 
             color = cine_colors.get(cine_key, "y")
@@ -981,6 +1002,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
         vel5d = self.pack.vel.astype(np.float32)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
 
         extra_scalars: Dict[str, np.ndarray] = {}
         if self.pack.ke is not None and self.pack.ke.ndim == 4:
@@ -995,6 +1017,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             vol_geom=self.pack.geom,
             cine_geom=cine_geom,
             line_xy=line_xy,
+            cine_shape=img_raw.shape,
             Npix=self.Npix,
             extra_scalars=extra_scalars,
         )
@@ -1233,6 +1256,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_xy = self._get_active_line_abs_raw(t)
         roi_abs = self._roi_abs_points_from_item()
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
 
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -1254,6 +1278,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             roi_abs_pts=roi_abs,
             vol_shape=vol_shape,
             npix=self.Npix,
+            cine_shape=cine_img_raw.shape,
         )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")

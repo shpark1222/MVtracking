@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 from scipy.ndimage import map_coordinates
@@ -65,7 +65,105 @@ class DICOMGeometry3D:
         return ijk
 
 
-def cine_line_to_patient_xyz(line_xy: np.ndarray, cine_geom: CineGeom) -> np.ndarray:
+def _normalize(vec: np.ndarray) -> np.ndarray:
+    vec = np.asarray(vec, dtype=np.float64)
+    n = np.linalg.norm(vec)
+    return vec / (n if n > 0 else 1e-12)
+
+
+def cine_display_axes(cine_geom: CineGeom) -> Dict[str, np.ndarray]:
+    iop = cine_geom.iop.reshape(6)
+    col_dir = _normalize(iop[0:3])
+    row_dir = _normalize(iop[3:6])
+    n_cine = _normalize(np.cross(col_dir, row_dir))
+
+    eP = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    eS = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+
+    x0 = eP - np.dot(eP, n_cine) * n_cine
+    y0 = eS - np.dot(eS, n_cine) * n_cine
+    if np.linalg.norm(x0) < 1e-6:
+        x0 = col_dir - np.dot(col_dir, n_cine) * n_cine
+    if np.linalg.norm(y0) < 1e-6:
+        y0 = row_dir - np.dot(row_dir, n_cine) * n_cine
+
+    x_disp = _normalize(x0)
+    y_tmp = y0 - np.dot(y0, x_disp) * x_disp
+    if np.linalg.norm(y_tmp) < 1e-6:
+        y_tmp = np.cross(n_cine, x_disp)
+    y_disp = _normalize(y_tmp)
+
+    if np.dot(np.cross(x_disp, y_disp), n_cine) < 0:
+        y_disp = -y_disp
+    if np.dot(y_disp, eS) < 0:
+        y_disp = -y_disp
+
+    return {"x_disp": x_disp, "y_disp": y_disp, "n_cine": n_cine, "col_dir": col_dir, "row_dir": row_dir}
+
+
+def cine_display_pixel_to_patient(
+    line_xy: np.ndarray,
+    cine_geom: CineGeom,
+    cine_shape: Tuple[int, int],
+) -> np.ndarray:
+    H, W = cine_shape
+    ps_row, ps_col = cine_geom.ps.reshape(2)
+    ipp = cine_geom.ipp.reshape(3)
+    axes = cine_display_axes(cine_geom)
+    x_disp = axes["x_disp"]
+    y_disp = axes["y_disp"]
+    col_dir = axes["col_dir"]
+    row_dir = axes["row_dir"]
+
+    Pc = (
+        ipp
+        + ((W - 1) / 2.0) * col_dir * ps_col
+        + ((H - 1) / 2.0) * row_dir * ps_row
+    )
+
+    u = (line_xy[:, 0] - (W - 1) / 2.0) * ps_col
+    v = (line_xy[:, 1] - (H - 1) / 2.0) * ps_row
+    return Pc[None, :] + u[:, None] * x_disp[None, :] + v[:, None] * y_disp[None, :]
+
+
+def cine_display_mapping(
+    cine_geom: CineGeom,
+    cine_shape: Tuple[int, int],
+) -> Tuple[np.ndarray, np.ndarray]:
+    H, W = cine_shape
+    ps_row, ps_col = cine_geom.ps.reshape(2)
+    ipp = cine_geom.ipp.reshape(3)
+    axes = cine_display_axes(cine_geom)
+    x_disp = axes["x_disp"]
+    y_disp = axes["y_disp"]
+    col_dir = axes["col_dir"]
+    row_dir = axes["row_dir"]
+
+    Pc = (
+        ipp
+        + ((W - 1) / 2.0) * col_dir * ps_col
+        + ((H - 1) / 2.0) * row_dir * ps_row
+    )
+
+    u = (np.arange(W, dtype=np.float64) - (W - 1) / 2.0) * ps_col
+    v = (np.arange(H, dtype=np.float64) - (H - 1) / 2.0) * ps_row
+    U, V = np.meshgrid(u, v, indexing="xy")
+    Pdisp = Pc.reshape(1, 1, 3) + U[:, :, None] * x_disp[None, None, :] + V[:, :, None] * y_disp[None, None, :]
+
+    geom = DICOMGeometry2D(ipp=ipp, row_cos=row_dir, col_cos=col_dir, ps_row=ps_row, ps_col=ps_col)
+    ij = geom.patient_to_pixel(Pdisp.reshape(-1, 3))
+    rowq = ij[:, 0].reshape(H, W)
+    colq = ij[:, 1].reshape(H, W)
+    return rowq, colq
+
+
+def cine_line_to_patient_xyz(
+    line_xy: np.ndarray,
+    cine_geom: CineGeom,
+    cine_shape: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
+    if cine_shape is not None:
+        return cine_display_pixel_to_patient(line_xy, cine_geom, cine_shape)
     ipp = cine_geom.ipp.reshape(3)
     iop = cine_geom.iop.reshape(6)
     col_dir = iop[0:3]
@@ -81,13 +179,17 @@ def cine_plane_normal(cine_geom: CineGeom) -> np.ndarray:
     iop = cine_geom.iop.reshape(6)
     col_dir = iop[0:3]
     row_dir = iop[3:6]
-    n = np.cross(row_dir, col_dir)
+    n = np.cross(col_dir, row_dir)
     nn = np.linalg.norm(n)
     return n / (nn if nn > 0 else 1e-12)
 
 
-def make_plane_from_cine_line(line_xy: np.ndarray, cine_geom: CineGeom):
-    P = cine_line_to_patient_xyz(line_xy, cine_geom)
+def make_plane_from_cine_line(
+    line_xy: np.ndarray,
+    cine_geom: CineGeom,
+    cine_shape: Optional[Tuple[int, int]] = None,
+):
+    P = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=cine_shape)
     c = P.mean(axis=0)
 
     n_cine = cine_plane_normal(cine_geom)
@@ -125,10 +227,11 @@ def reslice_plane_fixedN(
     vol_geom: VolGeom,
     cine_geom: CineGeom,
     line_xy: np.ndarray,
+    cine_shape: Optional[Tuple[int, int]] = None,
     Npix: int = 192,
     extra_scalars: Optional[Dict[str, np.ndarray]] = None,
 ):
-    c, u, v, n = make_plane_from_cine_line(line_xy, cine_geom)
+    c, u, v, n = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, Npix)

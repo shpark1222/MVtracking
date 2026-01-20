@@ -15,8 +15,9 @@ def _plane_voxel_coords(
     cine_geom: CineGeom,
     line_xy: np.ndarray,
     npix: int,
+    cine_shape: Tuple[int, int] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom)
+    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, npix)
@@ -41,8 +42,9 @@ def plane_roi_to_triangles(
     line_xy: np.ndarray,
     roi_abs_pts: np.ndarray,
     npix: int = 192,
+    cine_shape: Tuple[int, int] | None = None,
 ) -> Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom)
+    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, npix)
@@ -83,8 +85,9 @@ def plane_roi_to_mask(
     roi_abs_pts: np.ndarray,
     vol_shape: Tuple[int, int, int],
     npix: int = 192,
+    cine_shape: Tuple[int, int] | None = None,
 ) -> np.ndarray:
-    rowq, colq, slcq = _plane_voxel_coords(vol_geom, cine_geom, line_xy, npix)
+    rowq, colq, slcq = _plane_voxel_coords(vol_geom, cine_geom, line_xy, npix, cine_shape=cine_shape)
     mask2d = polygon_mask((npix, npix), roi_abs_pts)
     if not np.any(mask2d):
         return np.zeros(vol_shape, dtype=np.uint8)
@@ -137,11 +140,13 @@ def convert_plane_to_stl(
     roi_abs_pts: np.ndarray,
     vol_shape: Tuple[int, int, int],
     npix: int = 192,
+    cine_shape: Tuple[int, int] | None = None,
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
         line_xy=line_xy,
         roi_abs_pts=roi_abs_pts,
         npix=npix,
+        cine_shape=cine_shape,
     )
     write_ascii_stl(out_path, triangles)
