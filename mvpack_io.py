@@ -184,19 +184,14 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                     f"pcmra must be 4D (Ny,Nx,Nz,Nt). Got shape={pcmra.shape} from {pcmra_path}"
                 )
 
-        if geom_slice_order is not None and geom_slice_order.size == pcmra.shape[2]:
-            order = geom_slice_order.astype(int)
-            pcmra = pcmra[:, :, order, :].astype(np.float32)
-            vel = vel[:, :, order, :, :].astype(np.float32)
-            if ke is not None and ke.ndim == 4:
-                ke = ke[:, :, order, :].astype(np.float32)
-            if vortmag is not None and vortmag.ndim == 4:
-                vortmag = vortmag[:, :, order, :].astype(np.float32)
-            if geom_ipps is not None and geom_ipps.shape[0] == geom_slice_order.size:
-                geom_ipp0 = geom_ipps[order[0]].reshape(3)
-                orgn4 = geom_ipp0.copy()
-            if geom_slice_positions is not None and geom_slice_positions.size == geom_slice_order.size:
-                geom_slice_positions = geom_slice_positions[order]
+        if geom_slice_order is not None:
+            print("[mvtracking] slice_order found -> IGNORED")
+
+        print(
+            "[mvtracking] geom axis_map="
+            f"{geom_axis_map} orgn4={np.array2string(orgn4, precision=4, separator=',')} "
+            f"A0={np.array2string(A[:, 0], precision=4, separator=',')}"
+        )
 
         ke = None
         ke_path = _first_existing_path(f, ["/data/ke"])

@@ -325,8 +325,6 @@ class PackBuilder(QtWidgets.QWidget):
             gg["IOP"] = geom["IOP"]
             gg["IPP0"] = geom["IPP0"]
             gg["IPPs"] = geom["IPPs"]
-            gg["slice_positions"] = geom["slice_positions"]
-            gg["slice_order"] = geom["slice_order"]
 
             gc = f.create_group("cine")
             for tag, folder in self.cines:
