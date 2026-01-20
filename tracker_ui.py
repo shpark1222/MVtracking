@@ -85,16 +85,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         layout.setRowStretch(0, 3)
         layout.setRowStretch(1, 2)
         layout.setRowStretch(2, 0)
-        layout.setColumnStretch(0, 2)
-        layout.setColumnStretch(1, 3)
-        layout.setColumnStretch(2, 3)
+        layout.setColumnStretch(0, 1)
 
         # LEFT: cine selector + multi cine
         self.cine_views: Dict[str, pg.ImageView] = {}
         self.cine_line_rois: Dict[str, pg.LineSegmentROI] = {}
 
         left_box = QtWidgets.QVBoxLayout()
-        layout.addLayout(left_box, 0, 0, 2, 1)
 
         self.cine_selector = QtWidgets.QComboBox()
         left_box.addWidget(self.cine_selector)
@@ -132,6 +129,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.cine_selector.setCurrentText(self.active_cine_key)
         self.cine_selector.currentTextChanged.connect(self.on_active_cine_changed)
 
+        self.cine_view_checks: Dict[str, QtWidgets.QCheckBox] = {}
+        cine_check_row = QtWidgets.QHBoxLayout()
+        left_box.addLayout(cine_check_row)
+
         for k in cine_keys:
             view = pg.ImageView()
             view.ui.roiBtn.hide()
@@ -149,6 +150,12 @@ class ValveTracker(QtWidgets.QMainWindow):
 
             self.cine_views[k] = view
             self.cine_line_rois[k] = roi
+            chk = QtWidgets.QCheckBox(k)
+            chk.setChecked(True)
+            chk.stateChanged.connect(lambda _state, kk=k: self._update_cine_view_visibility(kk))
+            self.cine_view_checks[k] = chk
+            cine_check_row.addWidget(chk)
+        cine_check_row.addStretch(1)
 
         # RIGHT: pcmra / vel
         self.pcmra_view = pg.ImageView()
@@ -158,7 +165,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_view.ui.histogram.hide()
 
         pcmra_box = QtWidgets.QVBoxLayout()
-        layout.addLayout(pcmra_box, 0, 1)
 
         pcmra_level_row = QtWidgets.QHBoxLayout()
         pcmra_box.addLayout(pcmra_level_row)
@@ -187,7 +193,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.vel_view.ui.histogram.hide()
 
         vel_box = QtWidgets.QVBoxLayout()
-        layout.addLayout(vel_box, 0, 2)
 
         display_row = QtWidgets.QHBoxLayout()
         vel_box.addLayout(display_row)
@@ -247,9 +252,24 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._pcmra_auto_once = True
         self._cine_auto_once = True
 
-        # bottom right
+        left_widget = QtWidgets.QWidget()
+        left_widget.setLayout(left_box)
+        pcmra_widget = QtWidgets.QWidget()
+        pcmra_widget.setLayout(pcmra_box)
+        vel_widget = QtWidgets.QWidget()
+        vel_widget.setLayout(vel_box)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(pcmra_widget)
+        splitter.addWidget(vel_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 2)
+        layout.addWidget(splitter, 0, 0, 1, 1)
+
         bottom_right = QtWidgets.QVBoxLayout()
-        layout.addLayout(bottom_right, 1, 1, 1, 2)
+        layout.addLayout(bottom_right, 1, 0, 1, 1)
 
         chart_log_row = QtWidgets.QHBoxLayout()
         bottom_right.addLayout(chart_log_row, stretch=1)
@@ -313,7 +333,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
         self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
         self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
-        self.btn_roi_lock = QtWidgets.QPushButton("Lock ROI: OFF")
 
         btn_row.addWidget(self.btn_compute)
         btn_row.addWidget(self.btn_all)
@@ -322,7 +341,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_roi_copy)
         btn_row.addWidget(self.btn_roi_paste)
         btn_row.addWidget(self.btn_roi_forward)
-        btn_row.addWidget(self.btn_roi_lock)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addStretch(1)
@@ -334,7 +352,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_copy.clicked.connect(self.copy_roi_state)
         self.btn_roi_paste.clicked.connect(self.paste_roi_state)
         self.btn_roi_forward.clicked.connect(self.copy_roi_forward)
-        self.btn_roi_lock.clicked.connect(self.toggle_roi_lock)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
@@ -366,7 +383,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.slider.setTickInterval(1)
         self.slider.setTracking(True)
         self.slider.valueChanged.connect(self.on_phase_changed)
-        layout.addWidget(self.slider, 2, 0, 1, 3)
+        layout.addWidget(self.slider, 2, 0, 1, 1)
 
         # wheel filter
         self._wheel_filter = _WheelToSliderFilter(self.slider)
@@ -800,12 +817,31 @@ class ValveTracker(QtWidgets.QMainWindow):
         for k, roi in self.cine_line_rois.items():
             roi.setVisible(k == self.active_cine_key)
 
+    def _update_cine_view_visibility(self, cine_key: str):
+        view = self.cine_views.get(cine_key)
+        chk = self.cine_view_checks.get(cine_key)
+        if view is None or chk is None:
+            return
+        view.setVisible(bool(chk.isChecked()))
+
     # ============================
     # Phase update
     # ============================
     def on_phase_changed(self, v: int):
         self._remember_current_levels(self._current_display_mode)
         self.set_phase(v - 1)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if isinstance(self.focusWidget(), (QtWidgets.QAbstractSpinBox, QtWidgets.QLineEdit)):
+            super().keyPressEvent(event)
+            return
+        if event.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Down):
+            self.slider.setValue(max(self.slider.minimum(), self.slider.value() - 1))
+            return
+        if event.key() in (QtCore.Qt.Key.Key_Right, QtCore.Qt.Key.Key_Up):
+            self.slider.setValue(min(self.slider.maximum(), self.slider.value() + 1))
+            return
+        super().keyPressEvent(event)
 
     def set_phase(self, t: int):
         t = int(np.clip(t, 0, self.Nt - 1))
@@ -1166,7 +1202,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         H, W = shape_hw
         cx, cy = W * 0.5, H * 0.5
         r = min(H, W) * 0.12
-        angles = np.linspace(0, 2 * np.pi, 9, endpoint=False)
+        angles = np.linspace(0, 2 * np.pi, 5, endpoint=False)
         pts = np.column_stack([r * np.cos(angles), r * np.sin(angles)]).astype(np.float64)
         return {"pos": (cx, cy), "points": pts.tolist(), "closed": True}
 
@@ -1178,7 +1214,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         else:
             cx, cy = W * 0.5, H * 0.5
         r = min(H, W) * 0.12
-        angles = np.linspace(0, 2 * np.pi, 9, endpoint=False)
+        angles = np.linspace(0, 2 * np.pi, 5, endpoint=False)
         pts = np.column_stack([r * np.cos(angles), r * np.sin(angles)]).astype(np.float64)
         return {"pos": (cx, cy), "points": pts.tolist(), "closed": True}
 
