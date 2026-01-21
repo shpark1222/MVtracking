@@ -19,6 +19,7 @@ def find_mvtrack_files(folder: str) -> list[str]:
 def save_tracking_state_h5(
     path: str,
     line_norm: list,
+    line_angle: list,
     roi_state: list,
     roi_locked: list,
     metrics_Q: np.ndarray,
@@ -36,6 +37,9 @@ def save_tracking_state_h5(
     pcmra_auto_once: bool,
     cine_flip: tuple,
     cine_swap: str,
+    segment_payload: Optional[dict] = None,
+    segment_count: Optional[int] = None,
+    plot_segments: Optional[bool] = None,
 ):
     Nt = len(line_norm)
 
@@ -61,6 +65,7 @@ def save_tracking_state_h5(
     with h5py.File(path, "w") as f:
         g = f.create_group("state")
         g.create_dataset("line_norm", data=ln, compression="gzip")
+        g.create_dataset("line_angle", data=np.asarray(line_angle, dtype=np.float64), compression="gzip")
         g.create_dataset("roi_state_json", data=rs, compression="gzip")
         g.create_dataset("roi_locked", data=locked, compression="gzip")
         g.create_dataset("metrics_Q", data=np.asarray(metrics_Q, dtype=np.float64), compression="gzip")
@@ -78,6 +83,12 @@ def save_tracking_state_h5(
         g.attrs["pcmra_auto_once"] = int(bool(pcmra_auto_once))
         g.attrs["cine_flip_json"] = json.dumps(cine_flip)
         g.attrs["cine_swap"] = str(cine_swap)
+        if segment_payload is not None:
+            g.attrs["segment_payload_json"] = json.dumps(segment_payload)
+        if segment_count is not None:
+            g.attrs["segment_count"] = int(segment_count)
+        if plot_segments is not None:
+            g.attrs["plot_segments"] = int(bool(plot_segments))
 
 
 def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
@@ -92,10 +103,18 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         pcmra_auto_once = 1
         cine_flip = "[false, false, false]"
         cine_swap = "X Y Z"
+        segment_payload = "{}"
+        segment_count = 6
+        plot_segments = 0
         with h5py.File(path, "r") as f:
             if "/state/line_norm" not in f:
                 return None
             ln = np.array(f["/state/line_norm"][()], dtype=np.float64)
+            line_angle = (
+                np.array(f["/state/line_angle"][()], dtype=np.float64)
+                if "/state/line_angle" in f
+                else None
+            )
             rs = np.array(f["/state/roi_state_json"][()], dtype=object)
             Q = np.array(f["/state/metrics_Q"][()], dtype=np.float64)
             Vpk = np.array(f["/state/metrics_Vpk"][()], dtype=np.float64)
@@ -123,8 +142,13 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             pcmra_auto_once = f["/state"].attrs.get("pcmra_auto_once", pcmra_auto_once)
             cine_flip = f["/state"].attrs.get("cine_flip_json", cine_flip)
             cine_swap = f["/state"].attrs.get("cine_swap", cine_swap)
+            segment_payload = f["/state"].attrs.get("segment_payload_json", segment_payload)
+            segment_count = f["/state"].attrs.get("segment_count", segment_count)
+            plot_segments = f["/state"].attrs.get("plot_segments", plot_segments)
 
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
+        if line_angle is not None:
+            Nt = min(Nt, line_angle.shape[0])
         if locked is not None:
             Nt = min(Nt, locked.shape[0])
         if KE is not None:
@@ -139,6 +163,11 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             if np.all(np.isnan(ln[t])):
                 continue
             out_line[t] = ln[t].copy()
+
+        out_angle = [0.0] * expected_Nt
+        if line_angle is not None:
+            for t in range(Nt):
+                out_angle[t] = float(line_angle[t])
 
         out_roi = [None] * expected_Nt
         for t in range(Nt):
@@ -165,6 +194,7 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
 
         return {
             "line_norm": out_line,
+            "line_angle": out_angle,
             "roi_state": out_roi,
             "roi_locked": out_locked,
             "metrics_Q": Q,
@@ -182,6 +212,9 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "pcmra_auto_once": int(pcmra_auto_once),
             "cine_flip_json": cine_flip,
             "cine_swap": str(cine_swap),
+            "segment_payload_json": segment_payload,
+            "segment_count": int(segment_count),
+            "plot_segments": int(plot_segments),
         }
     except Exception:
         return None

@@ -84,6 +84,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._updating_image = False
         self._roi_clipboard = None
         self._line_clipboard = None
+        self._line_angle_clipboard = None
         self.lock_label_pcm = None
         self.lock_label_vel = None
         self._restored_state = False
@@ -94,8 +95,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._show_segments = False
         self.brush_mode = False
         self.brush_radius = 12.0
-        self.metrics_seg4 = [None] * self.Nt
-        self.metrics_seg6 = [None] * self.Nt
+        self.line_angle = [0.0] * self.Nt
+        self.metrics_seg4 = {}
+        self.metrics_seg6 = {}
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -221,17 +223,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_roi_row.addStretch(1)
         pcmra_box.addLayout(pcmra_roi_row)
 
-        pcmra_gif_row = QtWidgets.QHBoxLayout()
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
-        pcmra_gif_row.addWidget(self.btn_pcmra_gif)
-        pcmra_gif_row.addStretch(1)
-        pcmra_box.addLayout(pcmra_gif_row)
 
         pcmra_brush_row = QtWidgets.QHBoxLayout()
         self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
-        self.lbl_brush = QtWidgets.QLabel(f"Brush: {self.brush_radius:.0f}px")
         pcmra_brush_row.addWidget(self.btn_brush)
-        pcmra_brush_row.addWidget(self.lbl_brush)
         pcmra_brush_row.addStretch(1)
         pcmra_box.addLayout(pcmra_brush_row)
 
@@ -342,8 +338,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         chart_row.addWidget(self.chart_selector)
         self.chk_flip_flow = QtWidgets.QCheckBox("Flip flow sign")
         chart_row.addWidget(self.chk_flip_flow)
-        self.chk_show_segments = QtWidgets.QCheckBox("Show segments")
-        chart_row.addWidget(self.chk_show_segments)
+        self.chk_plot_segments = QtWidgets.QCheckBox("Plot segments")
+        chart_row.addWidget(self.chk_plot_segments)
         chart_row.addStretch(1)
         chart_box.addLayout(chart_row)
 
@@ -403,6 +399,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
+        btn_row.addWidget(self.btn_pcmra_gif)
         btn_row.addStretch(1)
 
         self.btn_compute.clicked.connect(self.compute_current)
@@ -415,9 +412,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
-        self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
         self.btn_brush.clicked.connect(self.toggle_brush_mode)
-        self.chk_show_segments.stateChanged.connect(self.toggle_segments_visibility)
+        self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
+        self.chk_plot_segments.stateChanged.connect(self.update_plot_for_selection)
         self.chk_flip_flow.stateChanged.connect(self.update_plot_for_selection)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
@@ -536,6 +533,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_cine_apply.clicked.connect(self.on_cine_transform_changed)
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
 
+        segment_row = QtWidgets.QHBoxLayout()
+        self.chk_apply_segments = QtWidgets.QCheckBox("Apply segments")
+        self.segment_selector = QtWidgets.QComboBox()
+        self.segment_selector.addItems(["4 segments", "6 segments"])
+        segment_row.addWidget(self.chk_apply_segments)
+        segment_row.addWidget(self.segment_selector)
+        segment_row.addStretch(1)
+        left_box.addLayout(segment_row)
+        self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
+        self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
+
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
         self.vel_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_vel)
 
@@ -550,6 +558,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.apply_cine_levels()
         self.apply_pcmra_levels()
         self.apply_level_range()
+        self._apply_levels_if_set()
 
     # ============================
     # Restore state
@@ -628,8 +637,22 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._restored_state = True
 
         self.line_norm = st.get("line_norm", self.line_norm)
+        self.line_angle = st.get("line_angle", self.line_angle)
         self.roi_state = st.get("roi_state", self.roi_state)
         self.roi_locked = st.get("roi_locked", self.roi_locked)
+        try:
+            segment_payload = json.loads(st.get("segment_payload_json", "{}"))
+            if isinstance(segment_payload, dict):
+                self.metrics_seg4 = segment_payload.get("seg4", self.metrics_seg4)
+                self.metrics_seg6 = segment_payload.get("seg6", self.metrics_seg6)
+        except Exception:
+            pass
+        segment_count = int(st.get("segment_count", 6))
+        plot_segments = bool(int(st.get("plot_segments", 0)))
+        self.segment_selector.setCurrentText("6 segments" if segment_count == 6 else "4 segments")
+        self.chk_plot_segments.setChecked(plot_segments)
+        if self.metrics_seg4 or self.metrics_seg6:
+            self.chk_apply_segments.setChecked(True)
 
         Q = st.get("metrics_Q", None)
         Vpk = st.get("metrics_Vpk", None)
@@ -812,6 +835,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if st is None:
             return
         self._line_clipboard = np.array(st, dtype=np.float64).copy()
+        self._line_angle_clipboard = float(self.line_angle[t])
         self.memo.appendPlainText("Copied cine line.")
 
     def paste_line_state(self):
@@ -822,6 +846,11 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.memo.appendPlainText("ROI is locked for this phase.")
             return
         self.line_norm[t] = np.array(self._line_clipboard, dtype=np.float64).copy()
+        if self._line_angle_clipboard is not None:
+            self.line_angle[t] = float(self._line_angle_clipboard)
+            self.spin_line_angle.blockSignals(True)
+            self.spin_line_angle.setValue(float(self._line_angle_clipboard))
+            self.spin_line_angle.blockSignals(False)
         self._cur_phase = None
         self.set_phase(t)
         self.compute_current(update_only=True)
@@ -836,6 +865,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         for tt in range(t + 1, self.Nt):
             if not self._is_roi_locked(tt):
                 self.line_norm[tt] = np.array(st, dtype=np.float64).copy()
+                self.line_angle[tt] = float(self.line_angle[t])
         self.memo.appendPlainText("Copied cine line forward.")
 
     def _roi_points_abs(self, roi: pg.LineSegmentROI) -> np.ndarray:
@@ -1052,6 +1082,10 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         self._cur_phase = t
         self.lbl_phase.setText(f"Phase: {t + 1}")
+        if 0 <= t < len(self.line_angle):
+            self.spin_line_angle.blockSignals(True)
+            self.spin_line_angle.setValue(float(self.line_angle[t]))
+            self.spin_line_angle.blockSignals(False)
         self._apply_display_colormap()
         self._sync_level_controls_from_state()
         self._apply_levels_if_set()
@@ -1120,7 +1154,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel5d = self.pack.vel.astype(np.float32)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
-        angle_deg = float(self.spin_line_angle.value())
+        angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
 
         extra_scalars: Dict[str, np.ndarray] = {}
         if self.pack.ke is not None and self.pack.ke.ndim == 4:
@@ -1377,7 +1411,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
-        angle_deg = float(self.spin_line_angle.value())
+        angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
 
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -1570,6 +1604,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not hasattr(self, "segment_curve_vel") or self.segment_curve_vel is None:
             self.segment_curve_vel = pg.PlotCurveItem(pen=pg.mkPen("m", width=1))
             self.vel_view.getView().addItem(self.segment_curve_vel)
+
+        if not hasattr(self, "segment_anchor_marker") or self.segment_anchor_marker is None:
+            self.segment_anchor_marker = pg.ScatterPlotItem(
+                size=8,
+                pen=pg.mkPen("m"),
+                brush=pg.mkBrush("m"),
+            )
+            self.pcmra_view.getView().addItem(self.segment_anchor_marker)
 
         self.set_poly_editable(self.edit_mode)
 
@@ -1780,26 +1822,50 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         Q, Vpk, Vmn, KE, VortPk, VortMn = self._compute_metrics(Ivelmag, Vn, spmm, Ike, Ivort)
         mask, center = self._roi_mask_and_center(Ivelmag.shape)
-        if self._segment_ref_angle is not None and center is not None and np.any(mask):
-            self.metrics_seg4[t] = self._segment_flow_values(
-                Vn,
-                spmm,
-                mask,
-                center,
-                self._segment_ref_angle,
-                4,
-            )
-            self.metrics_seg6[t] = self._segment_flow_values(
-                Vn,
-                spmm,
-                mask,
-                center,
-                self._segment_ref_angle,
-                6,
-            )
+        if self._segment_ref_angle is not None and center is not None and np.any(mask) and self._show_segments:
+            for metric in (
+                "Flow rate (mL/s)",
+                "Peak velocity (m/s)",
+                "Mean velocity (m/s)",
+                "Kinetic energy (uJ)",
+                "Peak vorticity (1/s)",
+                "Mean vorticity (1/s)",
+            ):
+                self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                    metric,
+                    Ivelmag,
+                    Vn,
+                    Ike,
+                    Ivort,
+                    spmm,
+                    mask,
+                    center,
+                    self._segment_ref_angle,
+                    4,
+                )
+                self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                    metric,
+                    Ivelmag,
+                    Vn,
+                    Ike,
+                    Ivort,
+                    spmm,
+                    mask,
+                    center,
+                    self._segment_ref_angle,
+                    6,
+                )
         else:
-            self.metrics_seg4[t] = None
-            self.metrics_seg6[t] = None
+            for metric in (
+                "Flow rate (mL/s)",
+                "Peak velocity (m/s)",
+                "Mean velocity (m/s)",
+                "Kinetic energy (uJ)",
+                "Peak vorticity (1/s)",
+                "Mean vorticity (1/s)",
+            ):
+                self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = None
+                self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = None
 
         self.metrics_Q[t] = Q
         self.metrics_Vpk[t] = Vpk
@@ -1809,6 +1875,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.metrics_VortMn[t] = VortMn
 
         self.update_metric_labels(t)
+        self._update_segment_overlay(t)
 
         if not update_only:
             self.update_plot_for_selection()
@@ -1833,8 +1900,16 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.metrics_KE[t] = np.nan
                 self.metrics_VortPk[t] = np.nan
                 self.metrics_VortMn[t] = np.nan
-                self.metrics_seg4[t] = None
-                self.metrics_seg6[t] = None
+                for metric in (
+                    "Flow rate (mL/s)",
+                    "Peak velocity (m/s)",
+                    "Mean velocity (m/s)",
+                    "Kinetic energy (uJ)",
+                    "Peak vorticity (1/s)",
+                    "Mean vorticity (1/s)",
+                ):
+                    self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = None
+                    self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = None
                 continue
 
             vvals = Ivelmag[mask]
@@ -1858,27 +1933,97 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.metrics_VortPk[t] = np.nan
                 self.metrics_VortMn[t] = np.nan
 
-            if self._segment_ref_angle is not None:
+            if self._segment_ref_angle is not None and self._show_segments:
                 center = abs_pts.mean(axis=0)
-                self.metrics_seg4[t] = self._segment_flow_values(
-                    Vn,
-                    spmm,
-                    mask,
-                    center,
-                    self._segment_ref_angle,
-                    4,
-                )
-                self.metrics_seg6[t] = self._segment_flow_values(
-                    Vn,
-                    spmm,
-                    mask,
-                    center,
-                    self._segment_ref_angle,
-                    6,
-                )
+                for metric in (
+                    "Flow rate (mL/s)",
+                    "Peak velocity (m/s)",
+                    "Mean velocity (m/s)",
+                    "Kinetic energy (uJ)",
+                    "Peak vorticity (1/s)",
+                    "Mean vorticity (1/s)",
+                ):
+                    self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                        metric,
+                        Ivelmag,
+                        Vn,
+                        Ike,
+                        Ivort,
+                        spmm,
+                        mask,
+                        center,
+                        self._segment_ref_angle,
+                        4,
+                    )
+                    self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                        metric,
+                        Ivelmag,
+                        Vn,
+                        Ike,
+                        Ivort,
+                        spmm,
+                        mask,
+                        center,
+                        self._segment_ref_angle,
+                        6,
+                    )
             else:
-                self.metrics_seg4[t] = None
-                self.metrics_seg6[t] = None
+                for metric in (
+                    "Flow rate (mL/s)",
+                    "Peak velocity (m/s)",
+                    "Mean velocity (m/s)",
+                    "Kinetic energy (uJ)",
+                    "Peak vorticity (1/s)",
+                    "Mean vorticity (1/s)",
+                ):
+                    self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = None
+                    self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = None
+
+            if self._segment_ref_angle is not None and self._show_segments:
+                center = abs_pts.mean(axis=0)
+                for metric in (
+                    "Flow rate (mL/s)",
+                    "Peak velocity (m/s)",
+                    "Mean velocity (m/s)",
+                    "Kinetic energy (uJ)",
+                    "Peak vorticity (1/s)",
+                    "Mean vorticity (1/s)",
+                ):
+                    self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                        metric,
+                        Ivelmag,
+                        Vn,
+                        Ike,
+                        Ivort,
+                        spmm,
+                        mask,
+                        center,
+                        self._segment_ref_angle,
+                        4,
+                    )
+                    self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = self._segment_values_for_metric(
+                        metric,
+                        Ivelmag,
+                        Vn,
+                        Ike,
+                        Ivort,
+                        spmm,
+                        mask,
+                        center,
+                        self._segment_ref_angle,
+                        6,
+                    )
+            else:
+                for metric in (
+                    "Flow rate (mL/s)",
+                    "Peak velocity (m/s)",
+                    "Mean velocity (m/s)",
+                    "Kinetic energy (uJ)",
+                    "Peak vorticity (1/s)",
+                    "Mean vorticity (1/s)",
+                ):
+                    self.metrics_seg4.setdefault(metric, [None] * self.Nt)[t] = None
+                    self.metrics_seg6.setdefault(metric, [None] * self.Nt)[t] = None
 
         self.update_plot_for_selection()
         self.update_metric_labels(int(self.slider.value()) - 1)
@@ -1967,6 +2112,64 @@ class ValveTracker(QtWidgets.QMainWindow):
             values.append(Q_m3s * 1e6)
         return values
 
+    def _segment_values_for_metric(
+        self,
+        metric: str,
+        Ivelmag: np.ndarray,
+        Vn: np.ndarray,
+        Ike: Optional[np.ndarray],
+        Ivort: Optional[np.ndarray],
+        spmm: float,
+        mask: np.ndarray,
+        center_xy: np.ndarray,
+        ref_angle: float,
+        n_segments: int,
+    ) -> List[float]:
+        rows, cols = np.where(mask)
+        if rows.size == 0:
+            return [np.nan] * n_segments
+        dx = cols.astype(np.float64) - center_xy[0]
+        dy = rows.astype(np.float64) - center_xy[1]
+        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
+        seg_width = 2.0 * np.pi / float(n_segments)
+        seg_idx = np.floor(angles / seg_width).astype(int)
+        seg_idx = np.clip(seg_idx, 0, n_segments - 1)
+
+        values = []
+        for seg in range(n_segments):
+            sel = seg_idx == seg
+            if not np.any(sel):
+                values.append(np.nan)
+                continue
+            rr = rows[sel]
+            cc = cols[sel]
+            if metric == "Flow rate (mL/s)":
+                dA_m2 = (spmm * 1e-3) ** 2
+                Q_m3s = float(np.nansum(Vn[rr, cc]) * dA_m2)
+                values.append(Q_m3s * 1e6)
+            elif metric == "Peak velocity (m/s)":
+                values.append(float(np.nanmax(Ivelmag[rr, cc])))
+            elif metric == "Mean velocity (m/s)":
+                values.append(float(np.nanmean(Ivelmag[rr, cc])))
+            elif metric == "Kinetic energy (uJ)":
+                if Ike is None:
+                    values.append(np.nan)
+                else:
+                    values.append(float(np.nansum(Ike[rr, cc]) * self._voxel_volume_m3 * 1e6))
+            elif metric == "Peak vorticity (1/s)":
+                if Ivort is None:
+                    values.append(np.nan)
+                else:
+                    values.append(float(np.nanmax(Ivort[rr, cc])))
+            elif metric == "Mean vorticity (1/s)":
+                if Ivort is None:
+                    values.append(np.nan)
+                else:
+                    values.append(float(np.nanmean(Ivort[rr, cc])))
+            else:
+                values.append(np.nan)
+        return values
+
     def _format_segments(self, values: Optional[List[float]]) -> str:
         if not values:
             return "-"
@@ -1990,6 +2193,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.memo.appendPlainText(
             f"Segment anchor set at ({anchor[0]:.1f}, {anchor[1]:.1f}); clockwise sectors enabled."
         )
+        if not self.chk_apply_segments.isChecked():
+            self.chk_apply_segments.blockSignals(True)
+            self.chk_apply_segments.setChecked(True)
+            self.chk_apply_segments.blockSignals(False)
         self.compute_current(update_only=True)
         self._update_segment_overlay(int(self.slider.value()) - 1)
 
@@ -2024,6 +2231,14 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         if not hasattr(self, "segment_curve_vel") or self.segment_curve_vel is None:
             return
+        if hasattr(self, "segment_anchor_marker") and self.segment_anchor_marker is not None:
+            if self._segment_anchor_xy is None or not self._show_segments:
+                self.segment_anchor_marker.setData([], [])
+            else:
+                self.segment_anchor_marker.setData(
+                    [self._segment_anchor_xy[0]],
+                    [self._segment_anchor_xy[1]],
+                )
         if not self._show_segments or self._segment_ref_angle is None:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
@@ -2045,7 +2260,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
             return
-        angles = [self._segment_ref_angle + i * (2.0 * np.pi / 6.0) for i in range(6)]
+        count = 6 if self.segment_selector.currentText().startswith("6") else 4
+        angles = [self._segment_ref_angle + i * (2.0 * np.pi / count) for i in range(count)]
         xs = []
         ys = []
         for ang in angles:
@@ -2054,18 +2270,24 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.segment_curve_pcm.setData(np.array(xs), np.array(ys))
         self.segment_curve_vel.setData(np.array(xs), np.array(ys))
 
-    def toggle_segments_visibility(self, state: int):
-        self._show_segments = bool(state)
+    def toggle_segments_visibility(self, _state: int):
+        self._show_segments = bool(self.chk_apply_segments.isChecked())
         self._update_segment_overlay(int(self.slider.value()) - 1)
+        self.compute_current(update_only=True)
 
     def toggle_brush_mode(self):
         self.brush_mode = not self.brush_mode
         self.btn_brush.setText("Brush ROI: ON" if self.brush_mode else "Brush ROI: OFF")
         self.memo.appendPlainText(f"Brush mode {'enabled' if self.brush_mode else 'disabled'}.")
+        cursor = QtCore.Qt.CursorShape.CrossCursor if self.brush_mode else QtCore.Qt.CursorShape.ArrowCursor
+        self.pcmra_view.getView().setCursor(cursor)
+        self.vel_view.getView().setCursor(cursor)
 
     def on_line_angle_changed(self, _value: float):
         self._cur_phase = None
         cur = int(self.slider.value()) - 1
+        if 0 <= cur < len(self.line_angle):
+            self.line_angle[cur] = float(self.spin_line_angle.value())
         self.set_phase(cur)
         self.compute_current(update_only=True)
 
@@ -2114,18 +2336,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         elif obj == self.vel_view.getView().scene():
             view = self.vel_view.getView()
 
-        if view is not None and event.type() == QtCore.QEvent.Type.Wheel:
+        if view is not None and event.type() in (QtCore.QEvent.Type.Wheel, QtCore.QEvent.Type.GraphicsSceneWheel):
             if self.brush_mode and event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
                 if hasattr(event, "angleDelta"):
                     delta = 1 if event.angleDelta().y() > 0 else -1
                 else:
                     delta = 1 if event.delta() > 0 else -1
                 self.brush_radius = float(np.clip(self.brush_radius + delta * 2.0, 2.0, 100.0))
-                self.lbl_brush.setText(f"Brush: {self.brush_radius:.0f}px")
                 event.accept()
                 return True
 
-        if view is not None and event.type() == QtCore.QEvent.Type.MouseMove:
+        if view is not None and event.type() in (QtCore.QEvent.Type.MouseMove, QtCore.QEvent.Type.GraphicsSceneMouseMove):
             if self.brush_mode and QtWidgets.QApplication.mouseButtons() & QtCore.Qt.MouseButton.LeftButton:
                 if hasattr(event, "scenePos"):
                     pos = view.mapSceneToView(event.scenePos())
@@ -2201,13 +2422,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         KE = self.metrics_KE[t]
         VortPk = self.metrics_VortPk[t]
         VortMn = self.metrics_VortMn[t]
-        seg4 = self.metrics_seg4[t]
-        seg6 = self.metrics_seg6[t]
+        seg_metric = self.chart_selector.currentText()
+        seg4 = self.metrics_seg4.get(seg_metric, [None] * self.Nt)[t]
+        seg6 = self.metrics_seg6.get(seg_metric, [None] * self.Nt)[t]
         self.lbl_Q.setText(f"Flow rate (mL/s): {Q:.3f}" if np.isfinite(Q) else "Flow rate (mL/s): -")
         seg4_txt = self._format_segments(seg4)
         seg6_txt = self._format_segments(seg6)
         if seg4 or seg6:
-            self.lbl_segments.setText(f"Segments Q4={seg4_txt} Q6={seg6_txt}")
+            self.lbl_segments.setText(f"Segments R1..: Q4={seg4_txt} Q6={seg6_txt}")
         else:
             self.lbl_segments.setText("Segments: -")
         self.lbl_Vpk.setText(f"Peak velocity (m/s): {Vpk:.3f}" if np.isfinite(Vpk) else "Peak velocity (m/s): -")
@@ -2236,6 +2458,29 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.plot.plot_metric(phases, self.metrics_VortPk, label, "tab:purple")
         elif label == "Mean vorticity (1/s)":
             self.plot.plot_metric(phases, self.metrics_VortMn, label, "tab:brown")
+
+        if self.chk_plot_segments.isChecked():
+            seg_count = 6 if self.segment_selector.currentText().startswith("6") else 4
+            seg_values = self.metrics_seg6.get(label) if seg_count == 6 else self.metrics_seg4.get(label)
+            if seg_values:
+                colors = ["tab:cyan", "tab:olive", "tab:pink", "tab:gray", "tab:green", "tab:orange"]
+                for idx in range(seg_count):
+                    series = []
+                    for t in range(self.Nt):
+                        vals = seg_values[t]
+                        series.append(vals[idx] if vals is not None and idx < len(vals) else np.nan)
+                    if label == "Flow rate (mL/s)":
+                        series = np.array(series) * flip
+                    self.plot.ax.plot(
+                        phases,
+                        series,
+                        marker="o",
+                        color=colors[idx % len(colors)],
+                        label=f"R{idx + 1}",
+                        linestyle="--",
+                    )
+                self.plot.ax.legend(loc="upper right")
+                self.plot.draw()
         self.plot.set_phase_indicator(int(self.slider.value()))
 
     def on_plot_phase_selected(self, phase: int):
@@ -2391,9 +2636,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not name.lower().startswith("mvtrack"):
             name = f"MVtrack_{name}"
         out_path = os.path.join(self.work_folder, name)
+        segment_payload = {}
+        if self.chk_plot_segments.isChecked():
+            segment_payload = {"seg4": self.metrics_seg4, "seg6": self.metrics_seg6}
         save_tracking_state_h5(
             path=out_path,
             line_norm=self.line_norm,
+            line_angle=self.line_angle,
             roi_state=self.roi_state,
             roi_locked=self.roi_locked,
             metrics_Q=self.metrics_Q,
@@ -2415,6 +2664,9 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.chk_cine_flip_z.isChecked(),
             ),
             cine_swap=self.cine_swap_selector.currentText(),
+            segment_payload=segment_payload,
+            segment_count=6 if self.segment_selector.currentText().startswith("6") else 4,
+            plot_segments=self.chk_plot_segments.isChecked(),
         )
         self.tracking_path = out_path
         self.memo.appendPlainText(f"Saved tracking state to: {out_path}")
