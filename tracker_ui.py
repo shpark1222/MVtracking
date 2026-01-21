@@ -1,11 +1,12 @@
 import json
 import os
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import numpy as np
 from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph as pg
 from scipy.ndimage import map_coordinates
+import imageio.v2 as imageio
 
 from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
 from stl_conversion import convert_plane_to_stl
@@ -84,6 +85,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._restored_state = False
         self._cine_display_maps: Dict[str, Tuple[Tuple[int, int], np.ndarray, np.ndarray]] = {}
         self._child_windows = []
+        self._segment_ref_angle: Optional[float] = None
+        self.metrics_seg4 = [None] * self.Nt
+        self.metrics_seg6 = [None] * self.Nt
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -198,6 +202,22 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_level_row.addStretch(1)
 
         pcmra_box.addWidget(self.pcmra_view, stretch=1)
+
+        pcmra_roi_row = QtWidgets.QHBoxLayout()
+        self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
+        self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
+        self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
+        pcmra_roi_row.addWidget(self.btn_roi_copy)
+        pcmra_roi_row.addWidget(self.btn_roi_paste)
+        pcmra_roi_row.addWidget(self.btn_roi_forward)
+        pcmra_roi_row.addStretch(1)
+        pcmra_box.addLayout(pcmra_roi_row)
+
+        pcmra_gif_row = QtWidgets.QHBoxLayout()
+        self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
+        pcmra_gif_row.addWidget(self.btn_pcmra_gif)
+        pcmra_gif_row.addStretch(1)
+        pcmra_box.addLayout(pcmra_gif_row)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -330,7 +350,18 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.lbl_VortPk = QtWidgets.QLabel("Peak vorticity (1/s): -")
         self.lbl_VortMn = QtWidgets.QLabel("Mean vorticity (1/s): -")
 
-        for w in [self.lbl_phase, self.lbl_Q, self.lbl_Vpk, self.lbl_Vmn, self.lbl_KE, self.lbl_VortPk, self.lbl_VortMn]:
+        self.lbl_segments = QtWidgets.QLabel("Segments: -")
+
+        for w in [
+            self.lbl_phase,
+            self.lbl_Q,
+            self.lbl_segments,
+            self.lbl_Vpk,
+            self.lbl_Vmn,
+            self.lbl_KE,
+            self.lbl_VortPk,
+            self.lbl_VortMn,
+        ]:
             stats_row.addWidget(w)
         stats_row.addStretch(1)
 
@@ -343,19 +374,15 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_copy = QtWidgets.QPushButton("Copy all phases")
         self.btn_save = QtWidgets.QPushButton("Save to MVtrack.h5")
         self.btn_convert_stl = QtWidgets.QPushButton("Convert STL")
-        self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
-        self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
-        self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
+        self.btn_cine_gif = QtWidgets.QPushButton("Export Cine GIF")
 
         btn_row.addWidget(self.btn_compute)
         btn_row.addWidget(self.btn_all)
         btn_row.addWidget(self.btn_edit)
         btn_row.addWidget(self.btn_copy)
-        btn_row.addWidget(self.btn_roi_copy)
-        btn_row.addWidget(self.btn_roi_paste)
-        btn_row.addWidget(self.btn_roi_forward)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_convert_stl)
+        btn_row.addWidget(self.btn_cine_gif)
         btn_row.addStretch(1)
 
         self.btn_compute.clicked.connect(self.compute_current)
@@ -367,6 +394,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_forward.clicked.connect(self.copy_roi_forward)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
+        self.btn_cine_gif.clicked.connect(self.export_cine_gif)
+        self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -448,6 +477,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_line_copy,
             self.btn_line_paste,
             self.btn_line_forward,
+            self.btn_cine_gif,
+            self.btn_pcmra_gif,
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
@@ -471,6 +502,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         left_box.addLayout(cine_xform_row)
         self.btn_cine_apply.clicked.connect(self.on_cine_transform_changed)
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
+
+        self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
+        self.vel_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_vel)
 
         # try restore MVtrack.h5
         if restore_state:
@@ -1332,6 +1366,94 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         self.memo.appendPlainText(f"STL saved: {out_path}")
 
+    def _normalize_image(self, img: np.ndarray, vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
+        data = img.astype(np.float64)
+        if vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            vmin = float(np.nanmin(data))
+            vmax = float(np.nanmax(data))
+        if not np.isfinite(vmin) or not np.isfinite(vmax) or vmin >= vmax:
+            return np.zeros_like(data, dtype=np.uint8)
+        data = np.clip((data - vmin) / (vmax - vmin), 0.0, 1.0)
+        return (data * 255.0).astype(np.uint8)
+
+    def _draw_line(self, img: np.ndarray, p0: np.ndarray, p1: np.ndarray, color: Tuple[int, int, int]) -> None:
+        h, w = img.shape[:2]
+        x0, y0 = int(round(p0[0])), int(round(p0[1]))
+        x1, y1 = int(round(p1[0])), int(round(p1[1]))
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            if 0 <= x0 < w and 0 <= y0 < h:
+                img[y0, x0, :] = color
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+
+    def _draw_polyline(self, img: np.ndarray, pts: np.ndarray, color: Tuple[int, int, int]) -> None:
+        if pts is None or pts.shape[0] < 2:
+            return
+        for i in range(len(pts)):
+            p0 = pts[i]
+            p1 = pts[(i + 1) % len(pts)]
+            self._draw_line(img, p0, p1, color)
+
+    def export_cine_gif(self):
+        if self.active_cine_key not in self.pack.cine_planes:
+            return
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Cine GIF",
+            os.path.join(self.work_folder, f"cine_{self.active_cine_key}.gif"),
+            "GIF Files (*.gif)",
+        )
+        if not out_path:
+            return
+        frames = []
+        vmin, vmax = self._cine_levels
+        for tt in range(self.Nt):
+            img = self._get_cine_frame(self.active_cine_key, tt)
+            base = self._normalize_image(img, vmin, vmax)
+            rgb = np.stack([base, base, base], axis=-1)
+            line_xy = self._get_active_line_abs_raw(tt)
+            self._draw_line(rgb, line_xy[0], line_xy[1], (255, 255, 0))
+            frames.append(rgb)
+        imageio.mimsave(out_path, frames, duration=0.1)
+        self.memo.appendPlainText(f"Cine GIF saved: {out_path}")
+
+    def export_pcmra_gif(self):
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save PCMRA GIF",
+            os.path.join(self.work_folder, "pcmra_roi.gif"),
+            "GIF Files (*.gif)",
+        )
+        if not out_path:
+            return
+        frames = []
+        vmin, vmax = self._pcmra_levels
+        for tt in range(self.Nt):
+            Ipcm, _, _, _, _ = self.reslice_for_phase(tt)
+            base = self._normalize_image(Ipcm, vmin, vmax)
+            rgb = np.stack([base, base, base], axis=-1)
+            st = self.roi_state[tt]
+            if st is None:
+                st = self.default_poly_roi_state(Ipcm.shape)
+            abs_pts = self._abs_pts_from_state_safe(st, Ipcm.shape)
+            abs_pts = closed_spline_xy(abs_pts, n_out=400)
+            self._draw_polyline(rgb, abs_pts, (0, 255, 255))
+            frames.append(rgb)
+        imageio.mimsave(out_path, frames, duration=0.1)
+        self.memo.appendPlainText(f"PCMRA GIF saved: {out_path}")
+
     # ============================
     # ROI state
     # ============================
@@ -1602,6 +1724,27 @@ class ValveTracker(QtWidgets.QMainWindow):
         Ivort = extras.get("vortmag")
 
         Q, Vpk, Vmn, KE, VortPk, VortMn = self._compute_metrics(Ivelmag, Vn, spmm, Ike, Ivort)
+        mask, center = self._roi_mask_and_center(Ivelmag.shape)
+        if self._segment_ref_angle is not None and center is not None and np.any(mask):
+            self.metrics_seg4[t] = self._segment_flow_values(
+                Vn,
+                spmm,
+                mask,
+                center,
+                self._segment_ref_angle,
+                4,
+            )
+            self.metrics_seg6[t] = self._segment_flow_values(
+                Vn,
+                spmm,
+                mask,
+                center,
+                self._segment_ref_angle,
+                6,
+            )
+        else:
+            self.metrics_seg4[t] = None
+            self.metrics_seg6[t] = None
 
         self.metrics_Q[t] = Q
         self.metrics_Vpk[t] = Vpk
@@ -1635,6 +1778,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.metrics_KE[t] = np.nan
                 self.metrics_VortPk[t] = np.nan
                 self.metrics_VortMn[t] = np.nan
+                self.metrics_seg4[t] = None
+                self.metrics_seg6[t] = None
                 continue
 
             vvals = Ivelmag[mask]
@@ -1658,6 +1803,28 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.metrics_VortPk[t] = np.nan
                 self.metrics_VortMn[t] = np.nan
 
+            if self._segment_ref_angle is not None:
+                center = abs_pts.mean(axis=0)
+                self.metrics_seg4[t] = self._segment_flow_values(
+                    Vn,
+                    spmm,
+                    mask,
+                    center,
+                    self._segment_ref_angle,
+                    4,
+                )
+                self.metrics_seg6[t] = self._segment_flow_values(
+                    Vn,
+                    spmm,
+                    mask,
+                    center,
+                    self._segment_ref_angle,
+                    6,
+                )
+            else:
+                self.metrics_seg4[t] = None
+                self.metrics_seg6[t] = None
+
         self.update_plot_for_selection()
         self.update_metric_labels(int(self.slider.value()) - 1)
         self.memo.appendPlainText("Compute all done.")
@@ -1678,6 +1845,122 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         abs_pts = cand_local if score(cand_local) >= score(cand_abs) else cand_abs
         return abs_pts
+
+    def _roi_mask_and_center(self, shape_hw: Tuple[int, int]) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return np.zeros(shape_hw, dtype=bool), None
+        st = self.roi_state[t]
+        if st is None:
+            st = self.default_poly_roi_state(shape_hw)
+            self.roi_state[t] = st
+        abs_pts = self._abs_pts_from_state_safe(st, shape_hw)
+        if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
+            return np.zeros(shape_hw, dtype=bool), None
+        abs_pts = closed_spline_xy(abs_pts, n_out=400)
+        H, W = shape_hw
+        abs_pts[:, 0] = np.clip(abs_pts[:, 0], 0, W - 1)
+        abs_pts[:, 1] = np.clip(abs_pts[:, 1], 0, H - 1)
+        mask = polygon_mask(shape_hw, abs_pts)
+        center = abs_pts.mean(axis=0) if abs_pts.size else None
+        return mask, center
+
+    def _roi_contour_points(self, shape_hw: Tuple[int, int]) -> Optional[np.ndarray]:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return None
+        st = self.roi_state[t]
+        if st is None:
+            st = self.default_poly_roi_state(shape_hw)
+            self.roi_state[t] = st
+        abs_pts = self._abs_pts_from_state_safe(st, shape_hw)
+        if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
+            return None
+        abs_pts = closed_spline_xy(abs_pts, n_out=400)
+        H, W = shape_hw
+        abs_pts[:, 0] = np.clip(abs_pts[:, 0], 0, W - 1)
+        abs_pts[:, 1] = np.clip(abs_pts[:, 1], 0, H - 1)
+        return abs_pts
+
+    def _segment_flow_values(
+        self,
+        Vn: np.ndarray,
+        spmm: float,
+        mask: np.ndarray,
+        center_xy: np.ndarray,
+        ref_angle: float,
+        n_segments: int,
+    ) -> List[float]:
+        if not np.any(mask):
+            return [np.nan] * n_segments
+        rows, cols = np.where(mask)
+        dx = cols.astype(np.float64) - center_xy[0]
+        dy = rows.astype(np.float64) - center_xy[1]
+        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
+        seg_width = 2.0 * np.pi / float(n_segments)
+        seg_idx = np.floor(angles / seg_width).astype(int)
+        seg_idx = np.clip(seg_idx, 0, n_segments - 1)
+
+        dA_m2 = (spmm * 1e-3) ** 2
+        values = []
+        for seg in range(n_segments):
+            sel = seg_idx == seg
+            if not np.any(sel):
+                values.append(np.nan)
+                continue
+            Q_m3s = float(np.nansum(Vn[rows[sel], cols[sel]]) * dA_m2)
+            values.append(Q_m3s * 1e6)
+        return values
+
+    def _format_segments(self, values: Optional[List[float]]) -> str:
+        if not values:
+            return "-"
+        out = []
+        for v in values:
+            out.append(f"{v:.2f}" if np.isfinite(v) else "-")
+        return "[" + ", ".join(out) + "]"
+
+    def _set_segment_anchor(self, point_xy: np.ndarray, shape_hw: Tuple[int, int]) -> None:
+        contour = self._roi_contour_points(shape_hw)
+        if contour is None or contour.size == 0:
+            return
+        center = contour.mean(axis=0)
+        diff = contour - point_xy[None, :]
+        idx = int(np.argmin(np.sum(diff * diff, axis=1)))
+        anchor = contour[idx]
+        dx = anchor[0] - center[0]
+        dy = anchor[1] - center[1]
+        self._segment_ref_angle = float(np.arctan2(-dy, dx))
+        self.memo.appendPlainText(
+            f"Segment anchor set at ({anchor[0]:.1f}, {anchor[1]:.1f}); clockwise sectors enabled."
+        )
+        self.compute_current(update_only=True)
+
+    def on_anchor_pick_pcmra(self, event):
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        view = self.pcmra_view.getView()
+        img_item = self.pcmra_view.getImageItem()
+        if img_item is None or img_item.image is None:
+            return
+        pos = view.mapSceneToView(event.scenePos())
+        shape = img_item.image.shape
+        if not (0 <= pos.x() < shape[1] and 0 <= pos.y() < shape[0]):
+            return
+        self._set_segment_anchor(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
+
+    def on_anchor_pick_vel(self, event):
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        view = self.vel_view.getView()
+        img_item = self.vel_view.getImageItem()
+        if img_item is None or img_item.image is None:
+            return
+        pos = view.mapSceneToView(event.scenePos())
+        shape = img_item.image.shape
+        if not (0 <= pos.x() < shape[1] and 0 <= pos.y() < shape[0]):
+            return
+        self._set_segment_anchor(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
 
     # ============================
     # Missing helpers
@@ -1743,7 +2026,15 @@ class ValveTracker(QtWidgets.QMainWindow):
         KE = self.metrics_KE[t]
         VortPk = self.metrics_VortPk[t]
         VortMn = self.metrics_VortMn[t]
+        seg4 = self.metrics_seg4[t]
+        seg6 = self.metrics_seg6[t]
         self.lbl_Q.setText(f"Flow rate (mL/s): {Q:.3f}" if np.isfinite(Q) else "Flow rate (mL/s): -")
+        seg4_txt = self._format_segments(seg4)
+        seg6_txt = self._format_segments(seg6)
+        if seg4 or seg6:
+            self.lbl_segments.setText(f"Segments Q4={seg4_txt} Q6={seg6_txt}")
+        else:
+            self.lbl_segments.setText("Segments: -")
         self.lbl_Vpk.setText(f"Peak velocity (m/s): {Vpk:.3f}" if np.isfinite(Vpk) else "Peak velocity (m/s): -")
         self.lbl_Vmn.setText(f"Mean velocity (m/s): {Vmn:.3f}" if np.isfinite(Vmn) else "Mean velocity (m/s): -")
         self.lbl_KE.setText(f"Kinetic energy (uJ): {KE:.3f}" if np.isfinite(KE) else "Kinetic energy (uJ): -")
