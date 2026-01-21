@@ -29,9 +29,9 @@ class PlotCanvas(FigureCanvas):
         self.ax.plot(phases, values, marker="o", color=color, label=label)
         self.ax.set_xlabel("Phase")
         self.ax.set_ylabel(label)
-        self.ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), borderaxespad=0.0)
+        self.ax.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.0)
         try:
-            self.fig.tight_layout(rect=[0, 0, 0.86, 1])
+            self.fig.tight_layout(rect=[0, 0, 0.94, 1])
         except Exception:
             pass
         if self._phase_line is not None:

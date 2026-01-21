@@ -37,12 +37,18 @@ class PolyLineROIDoubleClick(pg.PolyLineROI):
         return False
 
     def mouseClickEvent(self, event):
+        is_double = False
+        if hasattr(event, "double"):
+            try:
+                is_double = bool(event.double())
+            except TypeError:
+                is_double = bool(event.double)
         if (
             event.button() == QtCore.Qt.MouseButton.LeftButton
-            and not event.double()
+            and not is_double
             and not self._is_handle_hit(event)
         ):
-            event.ignore()
+            event.accept()
             return
         super().mouseClickEvent(event)
 
@@ -118,6 +124,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._show_segments = False
         self.brush_mode = False
         self.brush_radius = 3.0
+        self.brush_strength = 0.05
         self.line_angle = [0.0] * self.Nt
         self.metrics_seg4 = {}
         self.metrics_seg6 = {}
@@ -257,12 +264,18 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.segment_selector.addItems(["4 segments", "6 segments"])
         self.chk_segment_labels = QtWidgets.QCheckBox("Show R labels")
         self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
+        self.spin_brush_strength = QtWidgets.QDoubleSpinBox()
+        self.spin_brush_strength.setDecimals(2)
+        self.spin_brush_strength.setRange(0.01, 0.5)
+        self.spin_brush_strength.setSingleStep(0.01)
+        self.spin_brush_strength.setValue(self.brush_strength)
         pcmra_ctrl_row.addWidget(self.chk_apply_segments)
         pcmra_ctrl_row.addWidget(self.segment_selector)
         pcmra_ctrl_row.addWidget(self.chk_segment_labels)
         pcmra_ctrl_row.addWidget(self.btn_brush)
+        pcmra_ctrl_row.addWidget(QtWidgets.QLabel("Brush strength"))
+        pcmra_ctrl_row.addWidget(self.spin_brush_strength)
         pcmra_ctrl_row.addStretch(1)
-        pcmra_box.addLayout(pcmra_ctrl_row)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -334,13 +347,23 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_widget = QtWidgets.QWidget()
         vel_widget.setLayout(vel_box)
 
+        right_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        right_splitter.addWidget(pcmra_widget)
+        right_splitter.addWidget(vel_widget)
+        right_splitter.setStretchFactor(0, 1)
+        right_splitter.setStretchFactor(1, 1)
+
+        right_box = QtWidgets.QVBoxLayout()
+        right_box.addWidget(right_splitter)
+        right_box.addLayout(pcmra_ctrl_row)
+        right_widget = QtWidgets.QWidget()
+        right_widget.setLayout(right_box)
+
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.addWidget(left_widget)
-        splitter.addWidget(pcmra_widget)
-        splitter.addWidget(vel_widget)
+        splitter.addWidget(right_widget)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(1, 3)
         layout.addWidget(splitter, 0, 0, 1, 1)
 
         bottom_right = QtWidgets.QVBoxLayout()
@@ -449,6 +472,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
         self.chk_segment_labels.stateChanged.connect(self._on_segment_labels_toggle)
+        self.spin_brush_strength.valueChanged.connect(self._on_brush_strength_changed)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -697,6 +721,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.metrics_seg4 or self.metrics_seg6:
             self.chk_apply_segments.setChecked(True)
         self._show_segments = bool(self.chk_apply_segments.isChecked())
+        self._update_segment_context_menu()
 
         Q = st.get("metrics_Q", None)
         Vpk = st.get("metrics_Vpk", None)
@@ -2483,10 +2508,19 @@ class ValveTracker(QtWidgets.QMainWindow):
         if 0 <= t < self.Nt:
             self._segment_count[t] = 6 if self.segment_selector.currentText().startswith("6") else 4
         self._update_segment_overlay(int(self.slider.value()) - 1)
+        self._update_segment_context_menu()
         self.compute_current(update_only=True)
 
     def _on_segment_labels_toggle(self, _state: int):
         self._update_segment_overlay(int(self.slider.value()) - 1)
+
+    def _update_segment_context_menu(self):
+        menu_enabled = not self._show_segments
+        self.pcmra_view.getView().setMenuEnabled(menu_enabled)
+        self.vel_view.getView().setMenuEnabled(menu_enabled)
+
+    def _on_brush_strength_changed(self, value: float):
+        self.brush_strength = float(value)
 
     def toggle_brush_mode(self):
         self.brush_mode = not self.brush_mode
@@ -2547,7 +2581,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         mx, my = int(round(mouse[0])), int(round(mouse[1]))
         if 0 <= my < mask.shape[0] and 0 <= mx < mask.shape[1]:
             in_mask = bool(mask[my, mx])
-        step = max(self.brush_radius * 0.15, 1.0) * (1.0 if in_mask else -1.0)
+        step = max(self.brush_radius * self.brush_strength, 0.2) * (1.0 if in_mask else -1.0)
         updated = abs_pts.copy()
         for i, d in enumerate(dist):
             if d > self.brush_radius:
@@ -2582,6 +2616,20 @@ class ValveTracker(QtWidgets.QMainWindow):
                     delta = 1 if event.delta() > 0 else -1
                 self.brush_radius = float(np.clip(self.brush_radius + delta * 2.0, 2.0, 100.0))
                 self._update_brush_cursor()
+                event.accept()
+                return True
+
+        if view is not None and event.type() in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.GraphicsSceneMousePress):
+            if self.brush_mode and event.button() == QtCore.Qt.MouseButton.LeftButton:
+                t = int(self.slider.value()) - 1
+                self._begin_history_capture("roi", t)
+                event.accept()
+                return True
+
+        if view is not None and event.type() in (QtCore.QEvent.Type.MouseButtonRelease, QtCore.QEvent.Type.GraphicsSceneMouseRelease):
+            if self.brush_mode and event.button() == QtCore.Qt.MouseButton.LeftButton:
+                t = int(self.slider.value()) - 1
+                self._commit_history_capture("roi", t)
                 event.accept()
                 return True
 
