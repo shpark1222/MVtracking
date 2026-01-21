@@ -464,8 +464,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_view.installEventFilter(self._wheel_filter)
         self.vel_view.installEventFilter(self._wheel_filter)
         self.slider.installEventFilter(self._wheel_filter)
-        self.pcmra_view.getView().viewport().installEventFilter(self)
-        self.vel_view.getView().viewport().installEventFilter(self)
+        self.pcmra_view.getView().scene().installEventFilter(self)
+        self.vel_view.getView().scene().installEventFilter(self)
 
         # range save
         for k, view in self.cine_views.items():
@@ -2100,14 +2100,17 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def eventFilter(self, obj, event):
         view = None
-        if obj == self.pcmra_view.getView().viewport():
+        if obj == self.pcmra_view.getView().scene():
             view = self.pcmra_view.getView()
-        elif obj == self.vel_view.getView().viewport():
+        elif obj == self.vel_view.getView().scene():
             view = self.vel_view.getView()
 
         if view is not None and event.type() == QtCore.QEvent.Type.Wheel:
             if self.brush_mode and event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-                delta = 1 if event.angleDelta().y() > 0 else -1
+                if hasattr(event, "angleDelta"):
+                    delta = 1 if event.angleDelta().y() > 0 else -1
+                else:
+                    delta = 1 if event.delta() > 0 else -1
                 self.brush_radius = float(np.clip(self.brush_radius + delta * 2.0, 2.0, 100.0))
                 self.lbl_brush.setText(f"Brush: {self.brush_radius:.0f}px")
                 event.accept()
@@ -2115,8 +2118,11 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         if view is not None and event.type() == QtCore.QEvent.Type.MouseMove:
             if self.brush_mode and QtWidgets.QApplication.mouseButtons() & QtCore.Qt.MouseButton.LeftButton:
-                scene_pos = view.mapToScene(event.pos())
-                pos = view.mapSceneToView(scene_pos)
+                if hasattr(event, "scenePos"):
+                    pos = view.mapSceneToView(event.scenePos())
+                else:
+                    scene_pos = view.mapToScene(event.pos())
+                    pos = view.mapSceneToView(scene_pos)
                 self._apply_brush_at(view, pos)
                 return True
 
