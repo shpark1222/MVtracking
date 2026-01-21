@@ -6,7 +6,10 @@ import numpy as np
 from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph as pg
 from scipy.ndimage import map_coordinates
-import imageio.v2 as imageio
+try:
+    import imageio.v2 as imageio
+except ImportError:
+    imageio = None
 
 from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
 from stl_conversion import convert_plane_to_stl
@@ -1437,6 +1440,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             self._draw_line(img, p0, p1, color)
 
     def export_cine_gif(self):
+        if imageio is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "imageio is not installed.")
+            return
         if self.active_cine_key not in self.pack.cine_planes:
             return
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
@@ -1460,6 +1466,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.memo.appendPlainText(f"Cine GIF saved: {out_path}")
 
     def export_pcmra_gif(self):
+        if imageio is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "imageio is not installed.")
+            return
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "Save PCMRA GIF",
