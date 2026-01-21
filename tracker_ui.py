@@ -25,6 +25,28 @@ from tracking_state import (
 )
 
 
+class PolyLineROIDoubleClick(pg.PolyLineROI):
+    def _is_handle_hit(self, event) -> bool:
+        scene_pos = event.scenePos()
+        for handle in self.getHandles():
+            if hasattr(handle, "isVisible") and not handle.isVisible():
+                continue
+            local_pos = handle.mapFromScene(scene_pos)
+            if handle.contains(local_pos):
+                return True
+        return False
+
+    def mouseClickEvent(self, event):
+        if (
+            event.button() == QtCore.Qt.MouseButton.LeftButton
+            and not event.double()
+            and not self._is_handle_hit(event)
+        ):
+            event.ignore()
+            return
+        super().mouseClickEvent(event)
+
+
 class ValveTracker(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -101,6 +123,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.metrics_seg6 = {}
         self._segment_label_items_pcm = []
         self._segment_label_items_vel = []
+        self._history_active = None
+        self._undo_stack = []
+        self._redo_stack = []
+        self._restoring_history = False
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -451,6 +477,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_paste_action.setShortcut(QtGui.QKeySequence("Ctrl+Shift+V"))
         line_paste_action.triggered.connect(self.paste_line_state)
         self.addAction(line_paste_action)
+
+        undo_action = QtGui.QAction(self)
+        undo_action.setShortcut(QtGui.QKeySequence.Undo)
+        undo_action.triggered.connect(self.undo_last_action)
+        self.addAction(undo_action)
+
+        redo_action = QtGui.QAction(self)
+        redo_action.setShortcuts([QtGui.QKeySequence.Redo, QtGui.QKeySequence("Ctrl+Y")])
+        redo_action.triggered.connect(self.redo_last_action)
+        self.addAction(redo_action)
 
 
         # slider
@@ -1005,6 +1041,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         t = int(self.slider.value()) - 1
         if self._is_roi_locked(t):
             return
+        self._begin_history_capture("line", t)
 
         img_raw = self._get_cine_frame_raw(cine_key, t)
         H_raw, W_raw = img_raw.shape
@@ -1030,6 +1067,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._set_image_keep_zoom("vel", self._display_image(Ivelmag, extras), auto_levels=False)
 
         self.compute_current(update_only=True)
+        self._commit_history_capture("line", t)
 
     def _update_cine_roi_visibility(self):
         for k, roi in self.cine_line_rois.items():
@@ -1080,6 +1118,9 @@ class ValveTracker(QtWidgets.QMainWindow):
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if isinstance(self.focusWidget(), (QtWidgets.QAbstractSpinBox, QtWidgets.QLineEdit)):
             super().keyPressEvent(event)
+            return
+        if event.key() == QtCore.Qt.Key.Key_2:
+            self.toggle_brush_mode()
             return
         if event.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Down):
             self.slider.setValue(max(self.slider.minimum(), self.slider.value() - 1))
@@ -1595,14 +1636,14 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def ensure_poly_rois(self):
         if self.poly_roi_pcm is None:
-            self.poly_roi_pcm = pg.PolyLineROI([[0, 0], [10, 0], [10, 10]], closed=True)
+            self.poly_roi_pcm = PolyLineROIDoubleClick([[0, 0], [10, 0], [10, 10]], closed=True)
             self.pcmra_view.getView().addItem(self.poly_roi_pcm)
             self.poly_roi_pcm.sigRegionChanged.connect(self.on_poly_changed_pcm_live)
             self.poly_roi_pcm.sigRegionChangeFinished.connect(self.on_poly_changed_pcm_finished)
             self._set_roi_invisible(self.poly_roi_pcm)
 
         if self.poly_roi_vel is None:
-            self.poly_roi_vel = pg.PolyLineROI([[0, 0], [10, 0], [10, 10]], closed=True)
+            self.poly_roi_vel = PolyLineROIDoubleClick([[0, 0], [10, 0], [10, 10]], closed=True)
             self.vel_view.getView().addItem(self.poly_roi_vel)
             self.poly_roi_vel.sigRegionChanged.connect(self.on_poly_changed_vel_live)
             self.poly_roi_vel.sigRegionChangeFinished.connect(self.on_poly_changed_vel_finished)
@@ -1736,6 +1777,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         t = int(self.slider.value()) - 1
         if self._is_roi_locked(t):
             return
+        self._begin_history_capture("roi", t)
         self.roi_state[t] = self._get_roi_state(self.poly_roi_pcm)
         self.update_spline_overlay(t)
 
@@ -1752,6 +1794,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.apply_roi_state_both(state)
         self.update_spline_overlay(t)
         self.compute_current(update_only=True)
+        self._commit_history_capture("roi", t)
 
     def on_poly_changed_vel_live(self):
         if self._syncing_poly:
@@ -1759,6 +1802,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         t = int(self.slider.value()) - 1
         if self._is_roi_locked(t):
             return
+        self._begin_history_capture("roi", t)
         self.roi_state[t] = self._get_roi_state(self.poly_roi_vel)
         self.update_spline_overlay(t)
 
@@ -1775,6 +1819,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.apply_roi_state_both(state)
         self.update_spline_overlay(t)
         self.compute_current(update_only=True)
+        self._commit_history_capture("roi", t)
 
     # ============================
     # Metrics
@@ -1784,6 +1829,90 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_edit.setText("Edit ROI: ON" if self.edit_mode else "Edit ROI: OFF")
         t = int(self.slider.value()) - 1
         self.set_poly_editable(self.edit_mode and not self._is_roi_locked(t))
+
+    def _begin_history_capture(self, kind: str, phase: int) -> None:
+        if self._restoring_history or phase < 0 or phase >= self.Nt:
+            return
+        if self._history_active is not None:
+            if self._history_active.get("kind") == kind and self._history_active.get("phase") == phase:
+                return
+            return
+        state = self._snapshot_history_state(kind, phase)
+        self._history_active = {"kind": kind, "phase": phase, "state": state}
+
+    def _commit_history_capture(self, kind: str, phase: int) -> None:
+        if self._restoring_history:
+            return
+        if self._history_active is None:
+            return
+        if self._history_active.get("kind") != kind or self._history_active.get("phase") != phase:
+            return
+        previous = self._history_active.get("state")
+        self._history_active = None
+        current = self._snapshot_history_state(kind, phase)
+        if self._history_states_equal(kind, previous, current):
+            return
+        self._undo_stack.append({"kind": kind, "phase": phase, "state": previous})
+        self._redo_stack.clear()
+
+    def _snapshot_history_state(self, kind: str, phase: int):
+        if kind == "line":
+            state = self.line_norm[phase]
+            return None if state is None else np.array(state, dtype=np.float64).copy()
+        if kind == "roi":
+            state = self.roi_state[phase]
+            return None if state is None else json.loads(json.dumps(state))
+        return None
+
+    def _history_states_equal(self, kind: str, a, b) -> bool:
+        if kind == "line":
+            if a is None and b is None:
+                return True
+            if a is None or b is None:
+                return False
+            return np.allclose(np.array(a), np.array(b))
+        if kind == "roi":
+            return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+        return False
+
+    def _apply_history_state(self, entry: dict) -> None:
+        kind = entry.get("kind")
+        phase = entry.get("phase")
+        if kind not in ("line", "roi") or phase is None:
+            return
+        self._restoring_history = True
+        try:
+            if kind == "line":
+                state = entry.get("state")
+                self.line_norm[phase] = None if state is None else np.array(state, dtype=np.float64).copy()
+                if phase == int(self.slider.value()) - 1:
+                    self._cur_phase = None
+                    self.set_phase(phase)
+            elif kind == "roi":
+                state = entry.get("state")
+                self.roi_state[phase] = None if state is None else json.loads(json.dumps(state))
+                if phase == int(self.slider.value()) - 1 and state is not None:
+                    self.apply_roi_state_both(state)
+                    self.update_spline_overlay(phase)
+                    self.compute_current(update_only=True)
+        finally:
+            self._restoring_history = False
+
+    def undo_last_action(self):
+        if not self._undo_stack:
+            return
+        entry = self._undo_stack.pop()
+        current = self._snapshot_history_state(entry["kind"], entry["phase"])
+        self._redo_stack.append({**entry, "state": current})
+        self._apply_history_state(entry)
+
+    def redo_last_action(self):
+        if not self._redo_stack:
+            return
+        entry = self._redo_stack.pop()
+        current = self._snapshot_history_state(entry["kind"], entry["phase"])
+        self._undo_stack.append({**entry, "state": current})
+        self._apply_history_state(entry)
 
     def _compute_metrics(
         self,
