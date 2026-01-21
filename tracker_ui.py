@@ -86,6 +86,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._cine_display_maps: Dict[str, Tuple[Tuple[int, int], np.ndarray, np.ndarray]] = {}
         self._child_windows = []
         self._segment_ref_angle: Optional[float] = None
+        self._segment_anchor_xy: Optional[np.ndarray] = None
+        self._show_segments = False
+        self.brush_mode = False
+        self.brush_radius = 12.0
         self.metrics_seg4 = [None] * self.Nt
         self.metrics_seg6 = [None] * self.Nt
 
@@ -219,6 +223,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_gif_row.addStretch(1)
         pcmra_box.addLayout(pcmra_gif_row)
 
+        pcmra_brush_row = QtWidgets.QHBoxLayout()
+        self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
+        self.lbl_brush = QtWidgets.QLabel(f"Brush: {self.brush_radius:.0f}px")
+        pcmra_brush_row.addWidget(self.btn_brush)
+        pcmra_brush_row.addWidget(self.lbl_brush)
+        pcmra_brush_row.addStretch(1)
+        pcmra_box.addLayout(pcmra_brush_row)
+
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
         self.vel_view.ui.menuBtn.hide()
@@ -324,6 +336,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             ]
         )
         chart_row.addWidget(self.chart_selector)
+        self.chk_show_segments = QtWidgets.QCheckBox("Show segments")
+        chart_row.addWidget(self.chk_show_segments)
         chart_row.addStretch(1)
         chart_box.addLayout(chart_row)
 
@@ -396,6 +410,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
         self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
+        self.btn_brush.clicked.connect(self.toggle_brush_mode)
+        self.chk_show_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -445,6 +461,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_view.installEventFilter(self._wheel_filter)
         self.vel_view.installEventFilter(self._wheel_filter)
         self.slider.installEventFilter(self._wheel_filter)
+        self.pcmra_view.getView().viewport().installEventFilter(self)
+        self.vel_view.getView().viewport().installEventFilter(self)
 
         # range save
         for k, view in self.cine_views.items():
@@ -459,16 +477,24 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_line_paste = QtWidgets.QPushButton("Paste line")
         self.btn_line_forward = QtWidgets.QPushButton("Copy line forward")
         self.btn_plane_overlay = QtWidgets.QPushButton("Plane Overlay")
+        self.spin_line_angle = QtWidgets.QDoubleSpinBox()
+        self.spin_line_angle.setDecimals(1)
+        self.spin_line_angle.setRange(-90.0, 90.0)
+        self.spin_line_angle.setSingleStep(1.0)
+        self.spin_line_angle.setValue(0.0)
         line_ctrl_row.addWidget(self.btn_line_copy)
         line_ctrl_row.addWidget(self.btn_line_paste)
         line_ctrl_row.addWidget(self.btn_line_forward)
         line_ctrl_row.addWidget(self.btn_plane_overlay)
+        line_ctrl_row.addWidget(QtWidgets.QLabel("Angle (deg)"))
+        line_ctrl_row.addWidget(self.spin_line_angle)
         line_ctrl_row.addStretch(1)
         left_box.addLayout(line_ctrl_row)
         self.btn_line_copy.clicked.connect(self.copy_line_state)
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
         self.btn_plane_overlay.clicked.connect(self.show_plane_overlay)
+        self.spin_line_angle.valueChanged.connect(self.on_line_angle_changed)
 
         for btn in (
             self.btn_roi_copy,
@@ -1084,6 +1110,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel5d = self.pack.vel.astype(np.float32)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
+        angle_deg = float(self.spin_line_angle.value())
 
         extra_scalars: Dict[str, np.ndarray] = {}
         if self.pack.ke is not None and self.pack.ke.ndim == 4:
@@ -1099,6 +1126,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             cine_geom=cine_geom,
             line_xy=line_xy,
             cine_shape=img_raw.shape,
+            angle_offset_deg=angle_deg,
             Npix=self.Npix,
             extra_scalars=extra_scalars,
         )
@@ -1339,6 +1367,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
+        angle_deg = float(self.spin_line_angle.value())
 
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -1360,6 +1389,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             vol_shape=vol_shape,
             npix=self.Npix,
             cine_shape=cine_img_raw.shape,
+            angle_offset_deg=angle_deg,
         )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
@@ -1517,6 +1547,14 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.spline_curve_vel = pg.PlotCurveItem(pen=pg.mkPen("w", width=2))
             self.vel_view.getView().addItem(self.spline_curve_vel)
 
+        if not hasattr(self, "segment_curve_pcm") or self.segment_curve_pcm is None:
+            self.segment_curve_pcm = pg.PlotCurveItem(pen=pg.mkPen("m", width=1))
+            self.pcmra_view.getView().addItem(self.segment_curve_pcm)
+
+        if not hasattr(self, "segment_curve_vel") or self.segment_curve_vel is None:
+            self.segment_curve_vel = pg.PlotCurveItem(pen=pg.mkPen("m", width=1))
+            self.vel_view.getView().addItem(self.segment_curve_vel)
+
         self.set_poly_editable(self.edit_mode)
 
     def set_poly_editable(self, editable: bool):
@@ -1600,6 +1638,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         y = spl2[:, 1]
         self.spline_curve_pcm.setData(x, y)
         self.spline_curve_vel.setData(x, y)
+        self._update_segment_overlay(t)
 
     def on_poly_changed_pcm_live(self):
         if self._syncing_poly:
@@ -1931,13 +1970,15 @@ class ValveTracker(QtWidgets.QMainWindow):
         dx = anchor[0] - center[0]
         dy = anchor[1] - center[1]
         self._segment_ref_angle = float(np.arctan2(-dy, dx))
+        self._segment_anchor_xy = anchor.copy()
         self.memo.appendPlainText(
             f"Segment anchor set at ({anchor[0]:.1f}, {anchor[1]:.1f}); clockwise sectors enabled."
         )
         self.compute_current(update_only=True)
+        self._update_segment_overlay(int(self.slider.value()) - 1)
 
     def on_anchor_pick_pcmra(self, event):
-        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+        if event.button() != QtCore.Qt.MouseButton.RightButton:
             return
         view = self.pcmra_view.getView()
         img_item = self.pcmra_view.getImageItem()
@@ -1950,7 +1991,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._set_segment_anchor(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
 
     def on_anchor_pick_vel(self, event):
-        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+        if event.button() != QtCore.Qt.MouseButton.RightButton:
             return
         view = self.vel_view.getView()
         img_item = self.vel_view.getImageItem()
@@ -1961,6 +2002,116 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not (0 <= pos.x() < shape[1] and 0 <= pos.y() < shape[0]):
             return
         self._set_segment_anchor(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
+
+    def _update_segment_overlay(self, t: int):
+        if not hasattr(self, "segment_curve_pcm") or self.segment_curve_pcm is None:
+            return
+        if not hasattr(self, "segment_curve_vel") or self.segment_curve_vel is None:
+            return
+        if not self._show_segments or self._segment_ref_angle is None:
+            self.segment_curve_pcm.setData([], [])
+            self.segment_curve_vel.setData([], [])
+            return
+        st = self.roi_state[t] if 0 <= t < self.Nt else None
+        if st is None:
+            self.segment_curve_pcm.setData([], [])
+            self.segment_curve_vel.setData([], [])
+            return
+        abs_pts = self._abs_pts_from_state_safe(st, (self.Npix, self.Npix))
+        if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
+            self.segment_curve_pcm.setData([], [])
+            self.segment_curve_vel.setData([], [])
+            return
+        abs_pts = closed_spline_xy(abs_pts, n_out=400)
+        center = abs_pts.mean(axis=0)
+        r = np.max(np.linalg.norm(abs_pts - center[None, :], axis=1))
+        if not np.isfinite(r) or r <= 0:
+            self.segment_curve_pcm.setData([], [])
+            self.segment_curve_vel.setData([], [])
+            return
+        angles = [self._segment_ref_angle + i * (2.0 * np.pi / 6.0) for i in range(6)]
+        xs = []
+        ys = []
+        for ang in angles:
+            xs.extend([center[0], center[0] + r * np.cos(ang), np.nan])
+            ys.extend([center[1], center[1] - r * np.sin(ang), np.nan])
+        self.segment_curve_pcm.setData(np.array(xs), np.array(ys))
+        self.segment_curve_vel.setData(np.array(xs), np.array(ys))
+
+    def toggle_segments_visibility(self, state: int):
+        self._show_segments = bool(state)
+        self._update_segment_overlay(int(self.slider.value()) - 1)
+
+    def toggle_brush_mode(self):
+        self.brush_mode = not self.brush_mode
+        self.btn_brush.setText("Brush ROI: ON" if self.brush_mode else "Brush ROI: OFF")
+        self.memo.appendPlainText(f"Brush mode {'enabled' if self.brush_mode else 'disabled'}.")
+
+    def on_line_angle_changed(self, _value: float):
+        self._cur_phase = None
+        self.set_phase(int(self.slider.value()) - 1)
+
+    def _apply_brush_at(self, view: pg.ViewBox, pos: QtCore.QPointF):
+        if not self.brush_mode:
+            return
+        t = int(self.slider.value()) - 1
+        if self._is_roi_locked(t):
+            return
+        st = self.roi_state[t]
+        if st is None:
+            st = self.default_poly_roi_state((self.Npix, self.Npix))
+            self.roi_state[t] = st
+        abs_pts = self._abs_pts_from_state_safe(st, (self.Npix, self.Npix))
+        if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
+            return
+        center = abs_pts.mean(axis=0)
+        mouse = np.array([pos.x(), pos.y()], dtype=np.float64)
+        dist = np.linalg.norm(abs_pts - mouse[None, :], axis=1)
+        if not np.any(dist <= self.brush_radius):
+            return
+        step = max(self.brush_radius * 0.15, 1.0)
+        updated = abs_pts.copy()
+        for i, d in enumerate(dist):
+            if d > self.brush_radius:
+                continue
+            v = updated[i] - center
+            vn = np.linalg.norm(v)
+            if vn <= 1e-6:
+                continue
+            updated[i] = updated[i] + (v / vn) * step
+        new_state = {
+            "pos": (0.0, 0.0),
+            "points": updated.tolist(),
+            "closed": True,
+        }
+        self.roi_state[t] = new_state
+        self.apply_roi_state_both(new_state)
+        self.update_spline_overlay(t)
+        self.compute_current(update_only=True)
+
+    def eventFilter(self, obj, event):
+        view = None
+        if obj == self.pcmra_view.getView().viewport():
+            view = self.pcmra_view.getView()
+        elif obj == self.vel_view.getView().viewport():
+            view = self.vel_view.getView()
+
+        if view is not None and event.type() == QtCore.QEvent.Type.Wheel:
+            if self.brush_mode and event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                delta = 1 if event.angleDelta().y() > 0 else -1
+                self.brush_radius = float(np.clip(self.brush_radius + delta * 2.0, 2.0, 100.0))
+                self.lbl_brush.setText(f"Brush: {self.brush_radius:.0f}px")
+                event.accept()
+                return True
+
+        if view is not None and event.type() == QtCore.QEvent.Type.MouseMove:
+            if self.brush_mode and QtWidgets.QApplication.mouseButtons() & QtCore.Qt.MouseButton.LeftButton:
+                scene_pos = view.mapToScene(event.pos())
+                pos = view.mapSceneToView(scene_pos)
+                self._apply_brush_at(view, pos)
+                return True
+
+        return super().eventFilter(obj, event)
 
     # ============================
     # Missing helpers

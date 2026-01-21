@@ -16,8 +16,14 @@ def _plane_voxel_coords(
     line_xy: np.ndarray,
     npix: int,
     cine_shape: Tuple[int, int] | None = None,
+    angle_offset_deg: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
+    c, u, v, _ = make_plane_from_cine_line(
+        line_xy,
+        cine_geom,
+        cine_shape=cine_shape,
+        angle_offset_deg=angle_offset_deg,
+    )
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, npix)
@@ -43,8 +49,14 @@ def plane_roi_to_triangles(
     roi_abs_pts: np.ndarray,
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
+    angle_offset_deg: float = 0.0,
 ) -> Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    c, u, v, _ = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
+    c, u, v, _ = make_plane_from_cine_line(
+        line_xy,
+        cine_geom,
+        cine_shape=cine_shape,
+        angle_offset_deg=angle_offset_deg,
+    )
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, npix)
@@ -86,8 +98,16 @@ def plane_roi_to_mask(
     vol_shape: Tuple[int, int, int],
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
+    angle_offset_deg: float = 0.0,
 ) -> np.ndarray:
-    rowq, colq, slcq = _plane_voxel_coords(vol_geom, cine_geom, line_xy, npix, cine_shape=cine_shape)
+    rowq, colq, slcq = _plane_voxel_coords(
+        vol_geom,
+        cine_geom,
+        line_xy,
+        npix,
+        cine_shape=cine_shape,
+        angle_offset_deg=angle_offset_deg,
+    )
     mask2d = polygon_mask((npix, npix), roi_abs_pts)
     if not np.any(mask2d):
         return np.zeros(vol_shape, dtype=np.uint8)
@@ -141,6 +161,7 @@ def convert_plane_to_stl(
     vol_shape: Tuple[int, int, int],
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
+    angle_offset_deg: float = 0.0,
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
@@ -148,5 +169,6 @@ def convert_plane_to_stl(
         roi_abs_pts=roi_abs_pts,
         npix=npix,
         cine_shape=cine_shape,
+        angle_offset_deg=angle_offset_deg,
     )
     write_ascii_stl(out_path, triangles)

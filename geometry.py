@@ -184,10 +184,19 @@ def cine_plane_normal(cine_geom: CineGeom) -> np.ndarray:
     return n / (nn if nn > 0 else 1e-12)
 
 
+def _rotate_vector(vec: np.ndarray, axis: np.ndarray, angle_rad: float) -> np.ndarray:
+    axis = _normalize(axis)
+    vec = np.asarray(vec, dtype=np.float64)
+    c = np.cos(angle_rad)
+    s = np.sin(angle_rad)
+    return vec * c + np.cross(axis, vec) * s + axis * np.dot(axis, vec) * (1.0 - c)
+
+
 def make_plane_from_cine_line(
     line_xy: np.ndarray,
     cine_geom: CineGeom,
     cine_shape: Optional[Tuple[int, int]] = None,
+    angle_offset_deg: float = 0.0,
 ):
     P = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=cine_shape)
     c = P.mean(axis=0)
@@ -198,6 +207,8 @@ def make_plane_from_cine_line(
     u0 = u0 - n_cine * np.dot(u0, n_cine)
     un = np.linalg.norm(u0)
     u = u0 / (un if un > 0 else 1e-12)
+    if angle_offset_deg:
+        u = _rotate_vector(u, n_cine, np.deg2rad(angle_offset_deg))
 
     n = np.cross(u, n_cine)
     nn = np.linalg.norm(n)
@@ -228,10 +239,16 @@ def reslice_plane_fixedN(
     cine_geom: CineGeom,
     line_xy: np.ndarray,
     cine_shape: Optional[Tuple[int, int]] = None,
+    angle_offset_deg: float = 0.0,
     Npix: int = 192,
     extra_scalars: Optional[Dict[str, np.ndarray]] = None,
 ):
-    c, u, v, n = make_plane_from_cine_line(line_xy, cine_geom, cine_shape=cine_shape)
+    c, u, v, n = make_plane_from_cine_line(
+        line_xy,
+        cine_geom,
+        cine_shape=cine_shape,
+        angle_offset_deg=angle_offset_deg,
+    )
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
     uu = np.linspace(-fov_half, fov_half, Npix)
