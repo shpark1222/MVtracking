@@ -1,3 +1,5 @@
+import importlib
+import importlib.util
 import json
 import os
 from typing import Dict, Tuple, Optional, List
@@ -6,10 +8,9 @@ import numpy as np
 from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph as pg
 from scipy.ndimage import map_coordinates
-try:
-    import imageio.v2 as imageio
-except ImportError:
-    imageio = None
+
+_imageio_spec = importlib.util.find_spec("imageio.v2")
+imageio = importlib.import_module("imageio.v2") if _imageio_spec else None
 
 from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
 from stl_conversion import convert_plane_to_stl
@@ -339,6 +340,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             ]
         )
         chart_row.addWidget(self.chart_selector)
+        self.chk_flip_flow = QtWidgets.QCheckBox("Flip flow sign")
+        chart_row.addWidget(self.chk_flip_flow)
         self.chk_show_segments = QtWidgets.QCheckBox("Show segments")
         chart_row.addWidget(self.chk_show_segments)
         chart_row.addStretch(1)
@@ -415,6 +418,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
         self.btn_brush.clicked.connect(self.toggle_brush_mode)
         self.chk_show_segments.stateChanged.connect(self.toggle_segments_visibility)
+        self.chk_flip_flow.stateChanged.connect(self.update_plot_for_selection)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -543,6 +547,9 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self._update_cine_roi_visibility()
         self.set_phase(0)
+        self.apply_cine_levels()
+        self.apply_pcmra_levels()
+        self.apply_level_range()
 
     # ============================
     # Restore state
@@ -1462,7 +1469,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             line_xy = self._get_active_line_abs_raw(tt)
             self._draw_line(rgb, line_xy[0], line_xy[1], (255, 255, 0))
             frames.append(rgb)
-        imageio.mimsave(out_path, frames, duration=0.1)
+        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
         self.memo.appendPlainText(f"Cine GIF saved: {out_path}")
 
     def export_pcmra_gif(self):
@@ -1490,7 +1497,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             abs_pts = closed_spline_xy(abs_pts, n_out=400)
             self._draw_polyline(rgb, abs_pts, (0, 255, 255))
             frames.append(rgb)
-        imageio.mimsave(out_path, frames, duration=0.1)
+        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
         self.memo.appendPlainText(f"PCMRA GIF saved: {out_path}")
 
     # ============================
@@ -2058,7 +2065,9 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def on_line_angle_changed(self, _value: float):
         self._cur_phase = None
-        self.set_phase(int(self.slider.value()) - 1)
+        cur = int(self.slider.value()) - 1
+        self.set_phase(cur)
+        self.compute_current(update_only=True)
 
     def _apply_brush_at(self, view: pg.ViewBox, pos: QtCore.QPointF):
         if not self.brush_mode:
@@ -2214,8 +2223,9 @@ class ValveTracker(QtWidgets.QMainWindow):
     def update_plot_for_selection(self):
         phases = np.arange(1, self.Nt + 1)
         label = self.chart_selector.currentText()
+        flip = -1.0 if self.chk_flip_flow.isChecked() else 1.0
         if label == "Flow rate (mL/s)":
-            self.plot.plot_metric(phases, self.metrics_Q, label, "tab:blue")
+            self.plot.plot_metric(phases, self.metrics_Q * flip, label, "tab:blue")
         elif label == "Peak velocity (m/s)":
             self.plot.plot_metric(phases, self.metrics_Vpk, label, "tab:orange")
         elif label == "Mean velocity (m/s)":

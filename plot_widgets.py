@@ -18,6 +18,7 @@ class PlotCanvas(FigureCanvas):
         self._phase_callback = None
         super().__init__(self.fig)
         self.setParent(parent)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.fig.canvas.mpl_connect("button_press_event", self._on_click)
 
     def plot_metric(self, phases, values, label: str, color: str):
@@ -62,6 +63,34 @@ class PlotCanvas(FigureCanvas):
         phase = int(phases[idx])
         if self._phase_callback is not None:
             self._phase_callback(phase)
+
+    def _step_phase(self, step: int):
+        if self._phase_callback is None or self._phases is None:
+            return
+        phases = np.array(self._phases, dtype=int)
+        if phases.size == 0:
+            return
+        current = int(phases[0])
+        if self._phase_line is not None:
+            current = int(round(self._phase_line.get_xdata()[0]))
+        idx = int(np.argmin(np.abs(phases - current)))
+        idx = int(np.clip(idx + step, 0, len(phases) - 1))
+        self._phase_callback(int(phases[idx]))
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        step = 1 if delta > 0 else -1
+        self._step_phase(step)
+        event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Down):
+            self._step_phase(-1)
+            return
+        if event.key() in (QtCore.Qt.Key.Key_Right, QtCore.Qt.Key.Key_Up):
+            self._step_phase(1)
+            return
+        super().keyPressEvent(event)
 
 
 class _WheelToSliderFilter(QtCore.QObject):
