@@ -40,6 +40,11 @@ def save_tracking_state_h5(
     segment_payload: Optional[dict] = None,
     segment_count: Optional[int] = None,
     plot_segments: Optional[bool] = None,
+    segment_ref_angle: Optional[list] = None,
+    segment_anchor_xy: Optional[list] = None,
+    segment_count_list: Optional[list] = None,
+    apply_segments: Optional[bool] = None,
+    flip_flow: Optional[bool] = None,
 ):
     Nt = len(line_norm)
 
@@ -89,6 +94,31 @@ def save_tracking_state_h5(
             g.attrs["segment_count"] = int(segment_count)
         if plot_segments is not None:
             g.attrs["plot_segments"] = int(bool(plot_segments))
+        if segment_ref_angle is not None:
+            seg_ref = np.full((Nt,), np.nan, dtype=np.float64)
+            for t in range(min(Nt, len(segment_ref_angle))):
+                val = segment_ref_angle[t]
+                if val is not None:
+                    seg_ref[t] = float(val)
+            g.create_dataset("segment_ref_angle", data=seg_ref, compression="gzip")
+        if segment_anchor_xy is not None:
+            seg_anchor = np.full((Nt, 2), np.nan, dtype=np.float64)
+            for t in range(min(Nt, len(segment_anchor_xy))):
+                val = segment_anchor_xy[t]
+                if val is None:
+                    continue
+                arr = np.array(val, dtype=np.float64).reshape(2)
+                seg_anchor[t] = arr
+            g.create_dataset("segment_anchor_xy", data=seg_anchor, compression="gzip")
+        if segment_count_list is not None:
+            seg_count = np.full((Nt,), 6, dtype=np.int32)
+            for t in range(min(Nt, len(segment_count_list))):
+                seg_count[t] = int(segment_count_list[t])
+            g.create_dataset("segment_count_list", data=seg_count, compression="gzip")
+        if apply_segments is not None:
+            g.attrs["apply_segments"] = int(bool(apply_segments))
+        if flip_flow is not None:
+            g.attrs["flip_flow"] = int(bool(flip_flow))
 
 
 def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
@@ -106,6 +136,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         segment_payload = "{}"
         segment_count = 6
         plot_segments = 0
+        apply_segments = 0
+        flip_flow = 0
         with h5py.File(path, "r") as f:
             if "/state/line_norm" not in f:
                 return None
@@ -113,6 +145,21 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             line_angle = (
                 np.array(f["/state/line_angle"][()], dtype=np.float64)
                 if "/state/line_angle" in f
+                else None
+            )
+            segment_ref_angle = (
+                np.array(f["/state/segment_ref_angle"][()], dtype=np.float64)
+                if "/state/segment_ref_angle" in f
+                else None
+            )
+            segment_anchor_xy = (
+                np.array(f["/state/segment_anchor_xy"][()], dtype=np.float64)
+                if "/state/segment_anchor_xy" in f
+                else None
+            )
+            segment_count_list = (
+                np.array(f["/state/segment_count_list"][()], dtype=np.int32)
+                if "/state/segment_count_list" in f
                 else None
             )
             rs = np.array(f["/state/roi_state_json"][()], dtype=object)
@@ -145,10 +192,18 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             segment_payload = f["/state"].attrs.get("segment_payload_json", segment_payload)
             segment_count = f["/state"].attrs.get("segment_count", segment_count)
             plot_segments = f["/state"].attrs.get("plot_segments", plot_segments)
+            apply_segments = f["/state"].attrs.get("apply_segments", apply_segments)
+            flip_flow = f["/state"].attrs.get("flip_flow", flip_flow)
 
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
         if line_angle is not None:
             Nt = min(Nt, line_angle.shape[0])
+        if segment_ref_angle is not None:
+            Nt = min(Nt, segment_ref_angle.shape[0])
+        if segment_anchor_xy is not None:
+            Nt = min(Nt, segment_anchor_xy.shape[0])
+        if segment_count_list is not None:
+            Nt = min(Nt, segment_count_list.shape[0])
         if locked is not None:
             Nt = min(Nt, locked.shape[0])
         if KE is not None:
@@ -168,6 +223,21 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         if line_angle is not None:
             for t in range(Nt):
                 out_angle[t] = float(line_angle[t])
+        out_segment_ref = [None] * expected_Nt
+        if segment_ref_angle is not None:
+            for t in range(Nt):
+                val = float(segment_ref_angle[t])
+                out_segment_ref[t] = val if np.isfinite(val) else None
+        out_anchor = [None] * expected_Nt
+        if segment_anchor_xy is not None:
+            for t in range(Nt):
+                arr = np.array(segment_anchor_xy[t], dtype=np.float64).reshape(2)
+                if np.all(np.isfinite(arr)):
+                    out_anchor[t] = arr.tolist()
+        out_segment_count = [6] * expected_Nt
+        if segment_count_list is not None:
+            for t in range(Nt):
+                out_segment_count[t] = int(segment_count_list[t])
 
         out_roi = [None] * expected_Nt
         for t in range(Nt):
@@ -195,6 +265,9 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         return {
             "line_norm": out_line,
             "line_angle": out_angle,
+            "segment_ref_angle": out_segment_ref,
+            "segment_anchor_xy": out_anchor,
+            "segment_count_list": out_segment_count,
             "roi_state": out_roi,
             "roi_locked": out_locked,
             "metrics_Q": Q,
@@ -215,6 +288,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "segment_payload_json": segment_payload,
             "segment_count": int(segment_count),
             "plot_segments": int(plot_segments),
+            "apply_segments": int(apply_segments),
+            "flip_flow": int(flip_flow),
         }
     except Exception:
         return None
