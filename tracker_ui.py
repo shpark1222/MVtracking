@@ -95,10 +95,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._segment_count = [6] * self.Nt
         self._show_segments = False
         self.brush_mode = False
-        self.brush_radius = 12.0
+        self.brush_radius = 3.0
         self.line_angle = [0.0] * self.Nt
         self.metrics_seg4 = {}
         self.metrics_seg6 = {}
+        self._segment_label_items_pcm = []
+        self._segment_label_items_vel = []
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -214,28 +216,27 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         pcmra_box.addWidget(self.pcmra_view, stretch=1)
 
-        pcmra_roi_row = QtWidgets.QHBoxLayout()
+        pcmra_ctrl_row = QtWidgets.QHBoxLayout()
         self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
         self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
         self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
-        pcmra_roi_row.addWidget(self.btn_roi_copy)
-        pcmra_roi_row.addWidget(self.btn_roi_paste)
-        pcmra_roi_row.addWidget(self.btn_roi_forward)
-        pcmra_roi_row.addStretch(1)
-        pcmra_box.addLayout(pcmra_roi_row)
+        pcmra_ctrl_row.addWidget(self.btn_roi_copy)
+        pcmra_ctrl_row.addWidget(self.btn_roi_paste)
+        pcmra_ctrl_row.addWidget(self.btn_roi_forward)
 
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
 
-        pcmra_opts_row = QtWidgets.QHBoxLayout()
         self.chk_apply_segments = QtWidgets.QCheckBox("Apply segments")
         self.segment_selector = QtWidgets.QComboBox()
         self.segment_selector.addItems(["4 segments", "6 segments"])
+        self.chk_segment_labels = QtWidgets.QCheckBox("Show R labels")
         self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
-        pcmra_opts_row.addWidget(self.chk_apply_segments)
-        pcmra_opts_row.addWidget(self.segment_selector)
-        pcmra_opts_row.addWidget(self.btn_brush)
-        pcmra_opts_row.addStretch(1)
-        pcmra_box.addLayout(pcmra_opts_row)
+        pcmra_ctrl_row.addWidget(self.chk_apply_segments)
+        pcmra_ctrl_row.addWidget(self.segment_selector)
+        pcmra_ctrl_row.addWidget(self.chk_segment_labels)
+        pcmra_ctrl_row.addWidget(self.btn_brush)
+        pcmra_ctrl_row.addStretch(1)
+        pcmra_box.addLayout(pcmra_ctrl_row)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -251,26 +252,23 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.display_selector = QtWidgets.QComboBox()
         self.display_selector.addItems(["Velocity", "Kinetic energy", "Vorticity"])
         display_row.addWidget(self.display_selector)
-        display_row.addStretch(1)
         self._current_display_mode = self.display_selector.currentText()
 
-        level_row = QtWidgets.QHBoxLayout()
-        vel_box.addLayout(level_row)
-        level_row.addWidget(QtWidgets.QLabel("Min"))
+        display_row.addWidget(QtWidgets.QLabel("Min"))
         self.level_min = QtWidgets.QDoubleSpinBox()
         self.level_min.setDecimals(4)
         self.level_min.setRange(-1e9, 1e9)
-        level_row.addWidget(self.level_min)
-        level_row.addWidget(QtWidgets.QLabel("Max"))
+        display_row.addWidget(self.level_min)
+        display_row.addWidget(QtWidgets.QLabel("Max"))
         self.level_max = QtWidgets.QDoubleSpinBox()
         self.level_max.setDecimals(4)
         self.level_max.setRange(-1e9, 1e9)
-        level_row.addWidget(self.level_max)
+        display_row.addWidget(self.level_max)
         self.btn_auto_levels = QtWidgets.QPushButton("Auto")
-        level_row.addWidget(self.btn_auto_levels)
+        display_row.addWidget(self.btn_auto_levels)
         self.btn_apply_levels = QtWidgets.QPushButton("Apply")
-        level_row.addWidget(self.btn_apply_levels)
-        level_row.addStretch(1)
+        display_row.addWidget(self.btn_apply_levels)
+        display_row.addStretch(1)
 
         vel_box.addWidget(self.vel_view, stretch=1)
         self.display_selector.currentTextChanged.connect(self.on_display_changed)
@@ -424,6 +422,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_flip_flow.stateChanged.connect(self.update_plot_for_selection)
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
+        self.chk_segment_labels.stateChanged.connect(self._on_segment_labels_toggle)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -652,13 +651,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         segment_count = int(st.get("segment_count", 6))
         plot_segments = bool(int(st.get("plot_segments", 0)))
         apply_segments = bool(int(st.get("apply_segments", 0)))
+        show_segment_labels = bool(int(st.get("show_segment_labels", 0)))
         flip_flow = bool(int(st.get("flip_flow", 0)))
         self.segment_selector.setCurrentText("6 segments" if segment_count == 6 else "4 segments")
         self.chk_plot_segments.setChecked(plot_segments)
         self.chk_apply_segments.setChecked(apply_segments)
+        self.chk_segment_labels.setChecked(show_segment_labels)
         self.chk_flip_flow.setChecked(flip_flow)
         if self.metrics_seg4 or self.metrics_seg6:
             self.chk_apply_segments.setChecked(True)
+        self._show_segments = bool(self.chk_apply_segments.isChecked())
 
         Q = st.get("metrics_Q", None)
         Vpk = st.get("metrics_Vpk", None)
@@ -1630,6 +1632,19 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             self.pcmra_view.getView().addItem(self.segment_anchor_marker)
 
+        if not self._segment_label_items_pcm:
+            for _ in range(6):
+                item = pg.TextItem("", color="m", anchor=(0.5, 0.5))
+                item.setVisible(False)
+                self.pcmra_view.getView().addItem(item)
+                self._segment_label_items_pcm.append(item)
+        if not self._segment_label_items_vel:
+            for _ in range(6):
+                item = pg.TextItem("", color="w", anchor=(0.5, 0.5))
+                item.setVisible(False)
+                self.vel_view.getView().addItem(item)
+                self._segment_label_items_vel.append(item)
+
         self.set_poly_editable(self.edit_mode)
 
     def set_poly_editable(self, editable: bool):
@@ -2255,21 +2270,25 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not self._show_segments or t < 0 or t >= self.Nt:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
+            self._update_segment_labels(t)
             return
         ref_angle = self._segment_ref_angle[t]
         if ref_angle is None:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
+            self._update_segment_labels(t)
             return
         st = self.roi_state[t] if 0 <= t < self.Nt else None
         if st is None:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
+            self._update_segment_labels(t)
             return
         abs_pts = self._abs_pts_from_state_safe(st, (self.Npix, self.Npix))
         if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
+            self._update_segment_labels(t)
             return
         abs_pts = closed_spline_xy(abs_pts, n_out=400)
         center = abs_pts.mean(axis=0)
@@ -2277,6 +2296,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not np.isfinite(r) or r <= 0:
             self.segment_curve_pcm.setData([], [])
             self.segment_curve_vel.setData([], [])
+            self._update_segment_labels(t)
             return
         count = self._segment_count[t] if 0 <= t < self.Nt else 6
         angles = [ref_angle + i * (2.0 * np.pi / count) for i in range(count)]
@@ -2287,6 +2307,46 @@ class ValveTracker(QtWidgets.QMainWindow):
             ys.extend([center[1], center[1] - r * np.sin(ang), np.nan])
         self.segment_curve_pcm.setData(np.array(xs), np.array(ys))
         self.segment_curve_vel.setData(np.array(xs), np.array(ys))
+        self._update_segment_labels(t)
+
+    def _update_segment_labels(self, t: int) -> None:
+        if not self._segment_label_items_pcm or not self._segment_label_items_vel:
+            return
+        show = bool(self._show_segments and self.chk_segment_labels.isChecked())
+        if not show or t < 0 or t >= self.Nt:
+            for item in self._segment_label_items_pcm + self._segment_label_items_vel:
+                item.setVisible(False)
+            return
+        ref_angle = self._segment_ref_angle[t]
+        if ref_angle is None:
+            for item in self._segment_label_items_pcm + self._segment_label_items_vel:
+                item.setVisible(False)
+            return
+        contour = self._roi_contour_points((self.Npix, self.Npix))
+        if contour is None or contour.ndim != 2 or contour.shape[0] < 3:
+            for item in self._segment_label_items_pcm + self._segment_label_items_vel:
+                item.setVisible(False)
+            return
+        center = contour.mean(axis=0)
+        dist = np.linalg.norm(contour - center[None, :], axis=1)
+        if dist.size == 0 or not np.isfinite(dist).any():
+            for item in self._segment_label_items_pcm + self._segment_label_items_vel:
+                item.setVisible(False)
+            return
+        radius = float(np.nanmedian(dist)) * 0.7
+        count = self._segment_count[t] if 0 <= t < self.Nt else 6
+        seg_width = 2.0 * np.pi / float(count)
+        for idx in range(6):
+            visible = idx < count and radius > 0
+            label = f"R{idx + 1}"
+            angle = ref_angle + (idx + 0.5) * seg_width
+            x = center[0] + radius * float(np.cos(angle))
+            y = center[1] - radius * float(np.sin(angle))
+            for item in (self._segment_label_items_pcm[idx], self._segment_label_items_vel[idx]):
+                item.setVisible(visible)
+                if visible:
+                    item.setText(label)
+                    item.setPos(x, y)
 
     def toggle_segments_visibility(self, _state: int):
         self._show_segments = bool(self.chk_apply_segments.isChecked())
@@ -2295,6 +2355,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             self._segment_count[t] = 6 if self.segment_selector.currentText().startswith("6") else 4
         self._update_segment_overlay(int(self.slider.value()) - 1)
         self.compute_current(update_only=True)
+
+    def _on_segment_labels_toggle(self, _state: int):
+        self._update_segment_overlay(int(self.slider.value()) - 1)
 
     def toggle_brush_mode(self):
         self.brush_mode = not self.brush_mode
@@ -2724,6 +2787,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             segment_anchor_xy=self._segment_anchor_xy,
             segment_count_list=self._segment_count,
             apply_segments=self.chk_apply_segments.isChecked(),
+            show_segment_labels=self.chk_segment_labels.isChecked(),
             flip_flow=self.chk_flip_flow.isChecked(),
         )
         self.tracking_path = out_path

@@ -123,6 +123,7 @@ def cine_display_pixel_to_patient(
 
     u = (line_xy[:, 0] - (W - 1) / 2.0) * ps_col
     v = (line_xy[:, 1] - (H - 1) / 2.0) * ps_row
+    v = -v
     return Pc[None, :] + u[:, None] * x_disp[None, :] + v[:, None] * y_disp[None, :]
 
 
@@ -147,6 +148,7 @@ def cine_display_mapping(
 
     u = (np.arange(W, dtype=np.float64) - (W - 1) / 2.0) * ps_col
     v = (np.arange(H, dtype=np.float64) - (H - 1) / 2.0) * ps_row
+    v = -v
     U, V = np.meshgrid(u, v, indexing="xy")
     Pdisp = Pc.reshape(1, 1, 3) + U[:, :, None] * x_disp[None, None, :] + V[:, :, None] * y_disp[None, None, :]
 

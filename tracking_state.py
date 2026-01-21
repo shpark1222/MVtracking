@@ -44,6 +44,7 @@ def save_tracking_state_h5(
     segment_anchor_xy: Optional[list] = None,
     segment_count_list: Optional[list] = None,
     apply_segments: Optional[bool] = None,
+    show_segment_labels: Optional[bool] = None,
     flip_flow: Optional[bool] = None,
 ):
     Nt = len(line_norm)
@@ -117,6 +118,8 @@ def save_tracking_state_h5(
             g.create_dataset("segment_count_list", data=seg_count, compression="gzip")
         if apply_segments is not None:
             g.attrs["apply_segments"] = int(bool(apply_segments))
+        if show_segment_labels is not None:
+            g.attrs["show_segment_labels"] = int(bool(show_segment_labels))
         if flip_flow is not None:
             g.attrs["flip_flow"] = int(bool(flip_flow))
 
@@ -137,6 +140,7 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         segment_count = 6
         plot_segments = 0
         apply_segments = 0
+        show_segment_labels = 0
         flip_flow = 0
         with h5py.File(path, "r") as f:
             if "/state/line_norm" not in f:
@@ -193,6 +197,7 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             segment_count = f["/state"].attrs.get("segment_count", segment_count)
             plot_segments = f["/state"].attrs.get("plot_segments", plot_segments)
             apply_segments = f["/state"].attrs.get("apply_segments", apply_segments)
+            show_segment_labels = f["/state"].attrs.get("show_segment_labels", show_segment_labels)
             flip_flow = f["/state"].attrs.get("flip_flow", flip_flow)
 
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
@@ -289,6 +294,7 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "segment_count": int(segment_count),
             "plot_segments": int(plot_segments),
             "apply_segments": int(apply_segments),
+            "show_segment_labels": int(show_segment_labels),
             "flip_flow": int(flip_flow),
         }
     except Exception:
