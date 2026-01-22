@@ -25,34 +25,6 @@ from tracking_state import (
 )
 
 
-class PolyLineROIDoubleClick(pg.PolyLineROI):
-    def _is_handle_hit(self, event) -> bool:
-        scene_pos = event.scenePos()
-        for handle in self.getHandles():
-            if hasattr(handle, "isVisible") and not handle.isVisible():
-                continue
-            local_pos = handle.mapFromScene(scene_pos)
-            if handle.contains(local_pos):
-                return True
-        return False
-
-    def mouseClickEvent(self, event):
-        is_double = False
-        if hasattr(event, "double"):
-            try:
-                is_double = bool(event.double())
-            except TypeError:
-                is_double = bool(event.double)
-        if (
-            event.button() == QtCore.Qt.MouseButton.LeftButton
-            and not is_double
-            and not self._is_handle_hit(event)
-        ):
-            event.accept()
-            return
-        super().mouseClickEvent(event)
-
-
 class ValveTracker(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -124,7 +96,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._show_segments = False
         self.brush_mode = False
         self.brush_radius = 3.0
-        self.brush_strength = 0.05
+        self.brush_strength = 0.02
         self.line_angle = [0.0] * self.Nt
         self.metrics_seg4 = {}
         self.metrics_seg6 = {}
@@ -264,17 +236,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.segment_selector.addItems(["4 segments", "6 segments"])
         self.chk_segment_labels = QtWidgets.QCheckBox("Show R labels")
         self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
-        self.spin_brush_strength = QtWidgets.QDoubleSpinBox()
-        self.spin_brush_strength.setDecimals(2)
-        self.spin_brush_strength.setRange(0.01, 0.5)
-        self.spin_brush_strength.setSingleStep(0.01)
-        self.spin_brush_strength.setValue(self.brush_strength)
         pcmra_ctrl_row.addWidget(self.chk_apply_segments)
         pcmra_ctrl_row.addWidget(self.segment_selector)
         pcmra_ctrl_row.addWidget(self.chk_segment_labels)
         pcmra_ctrl_row.addWidget(self.btn_brush)
-        pcmra_ctrl_row.addWidget(QtWidgets.QLabel("Brush strength"))
-        pcmra_ctrl_row.addWidget(self.spin_brush_strength)
         pcmra_ctrl_row.addStretch(1)
 
         self.vel_view = pg.ImageView()
@@ -472,7 +437,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
         self.chk_segment_labels.stateChanged.connect(self._on_segment_labels_toggle)
-        self.spin_brush_strength.valueChanged.connect(self._on_brush_strength_changed)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -790,6 +754,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.cine_swap_selector.setCurrentText(cine_swap)
 
         self._sync_level_controls_from_state()
+        self.on_cine_transform_changed()
 
         self.memo.appendPlainText(f"Restored tracking state from: {st_path}")
 
@@ -1661,14 +1626,14 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def ensure_poly_rois(self):
         if self.poly_roi_pcm is None:
-            self.poly_roi_pcm = PolyLineROIDoubleClick([[0, 0], [10, 0], [10, 10]], closed=True)
+            self.poly_roi_pcm = pg.PolyLineROI([[0, 0], [10, 0], [10, 10]], closed=True)
             self.pcmra_view.getView().addItem(self.poly_roi_pcm)
             self.poly_roi_pcm.sigRegionChanged.connect(self.on_poly_changed_pcm_live)
             self.poly_roi_pcm.sigRegionChangeFinished.connect(self.on_poly_changed_pcm_finished)
             self._set_roi_invisible(self.poly_roi_pcm)
 
         if self.poly_roi_vel is None:
-            self.poly_roi_vel = PolyLineROIDoubleClick([[0, 0], [10, 0], [10, 10]], closed=True)
+            self.poly_roi_vel = pg.PolyLineROI([[0, 0], [10, 0], [10, 10]], closed=True)
             self.vel_view.getView().addItem(self.poly_roi_vel)
             self.poly_roi_vel.sigRegionChanged.connect(self.on_poly_changed_vel_live)
             self.poly_roi_vel.sigRegionChangeFinished.connect(self.on_poly_changed_vel_finished)
@@ -2285,8 +2250,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         rows, cols = np.where(mask)
         dx = cols.astype(np.float64) - center_xy[0]
         dy = rows.astype(np.float64) - center_xy[1]
-        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
         seg_width = 2.0 * np.pi / float(n_segments)
+        angles = (np.arctan2(-dy, dx) - ref_angle + seg_width) % (2.0 * np.pi)
         seg_idx = np.floor(angles / seg_width).astype(int)
         seg_idx = np.clip(seg_idx, 0, n_segments - 1)
 
@@ -2319,8 +2284,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             return [np.nan] * n_segments
         dx = cols.astype(np.float64) - center_xy[0]
         dy = rows.astype(np.float64) - center_xy[1]
-        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
         seg_width = 2.0 * np.pi / float(n_segments)
+        angles = (np.arctan2(-dy, dx) - ref_angle + seg_width) % (2.0 * np.pi)
         seg_idx = np.floor(angles / seg_width).astype(int)
         seg_idx = np.clip(seg_idx, 0, n_segments - 1)
 
@@ -2385,7 +2350,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._segment_anchor_xy[t] = anchor.copy()
         self._segment_count[t] = 6 if self.segment_selector.currentText().startswith("6") else 4
         self.memo.appendPlainText(
-            f"Segment anchor set at ({anchor[0]:.1f}, {anchor[1]:.1f}); clockwise sectors enabled."
+            f"Segment anchor set at ({anchor[0]:.1f}, {anchor[1]:.1f}); regional sectors enabled."
         )
         if not self.chk_apply_segments.isChecked():
             self.chk_apply_segments.blockSignals(True)
@@ -2490,10 +2455,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         radius = float(np.nanmedian(dist)) * 0.7
         count = self._segment_count[t] if 0 <= t < self.Nt else 6
         seg_width = 2.0 * np.pi / float(count)
+        start_angle = ref_angle + seg_width
         for idx in range(6):
             visible = idx < count and radius > 0
             label = f"R{idx + 1}"
-            angle = ref_angle + (idx + 0.5) * seg_width
+            angle = start_angle + (idx + 0.5) * seg_width
             x = center[0] + radius * float(np.cos(angle))
             y = center[1] - radius * float(np.sin(angle))
             for item in (self._segment_label_items_pcm[idx], self._segment_label_items_vel[idx]):
@@ -2518,9 +2484,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         menu_enabled = not self._show_segments
         self.pcmra_view.getView().setMenuEnabled(menu_enabled)
         self.vel_view.getView().setMenuEnabled(menu_enabled)
-
-    def _on_brush_strength_changed(self, value: float):
-        self.brush_strength = float(value)
 
     def toggle_brush_mode(self):
         self.brush_mode = not self.brush_mode
