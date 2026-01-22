@@ -43,13 +43,25 @@ def _plane_voxel_coords(
     return rowq, colq, slcq
 
 
+def _patient_to_voxel_coords(vol_geom: VolGeom, xyz: np.ndarray) -> np.ndarray:
+    A = vol_geom.A
+    orgn4 = vol_geom.orgn4.reshape(3)
+    abc = np.linalg.solve(A, (xyz - orgn4).T).T
+    col = abc[:, 0]
+    row = abc[:, 1]
+    slc = abc[:, 2]
+    return np.column_stack([row, col, slc])
+
+
 def plane_roi_to_triangles(
+    vol_geom: VolGeom,
     cine_geom: CineGeom,
     line_xy: np.ndarray,
     roi_abs_pts: np.ndarray,
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
+    output_space: str = "voxel",
 ) -> Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     c, u, v, _ = make_plane_from_cine_line(
         line_xy,
@@ -83,6 +95,9 @@ def plane_roi_to_triangles(
             v10 = c + uv10[0] * u + uv10[1] * v
             v01 = c + uv01[0] * u + uv01[1] * v
             v11 = c + uv11[0] * u + uv11[1] * v
+            if output_space == "voxel":
+                verts = np.vstack([v00, v10, v11, v01])
+                v00, v10, v11, v01 = _patient_to_voxel_coords(vol_geom, verts)
 
             triangles.append((v00, v10, v11))
             triangles.append((v00, v11, v01))
@@ -162,13 +177,16 @@ def convert_plane_to_stl(
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
+    output_space: str = "voxel",
 ):
     triangles = plane_roi_to_triangles(
+        vol_geom=vol_geom,
         cine_geom=cine_geom,
         line_xy=line_xy,
         roi_abs_pts=roi_abs_pts,
         npix=npix,
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
+        output_space=output_space,
     )
     write_ascii_stl(out_path, triangles)
