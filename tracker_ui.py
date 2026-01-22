@@ -1477,35 +1477,47 @@ class ValveTracker(QtWidgets.QMainWindow):
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
         base_root, _ = os.path.splitext(out_path)
-        variants = [
-            ("col_row", (0, 1, 2), np.array([1.0, 1.0, 1.0])),
-            ("flip_col_row", (0, 1, 2), np.array([-1.0, 1.0, 1.0])),
-            ("col_flip_row", (0, 1, 2), np.array([1.0, -1.0, 1.0])),
-            ("flip_col_flip_row", (0, 1, 2), np.array([-1.0, -1.0, 1.0])),
-            ("swap_col_row", (1, 0, 2), np.array([1.0, 1.0, 1.0])),
-            ("swap_flip_col_row", (1, 0, 2), np.array([-1.0, 1.0, 1.0])),
-            ("swap_col_flip_row", (1, 0, 2), np.array([1.0, -1.0, 1.0])),
-            ("swap_flip_col_flip_row", (1, 0, 2), np.array([-1.0, -1.0, 1.0])),
-        ]
+        axis_permutations = {
+            "col_row_slice": (0, 1, 2),
+            "col_slice_row": (0, 2, 1),
+            "row_col_slice": (1, 0, 2),
+            "row_slice_col": (1, 2, 0),
+            "slice_col_row": (2, 0, 1),
+            "slice_row_col": (2, 1, 0),
+        }
+        flip_variants = {
+            "noflip": np.array([1.0, 1.0, 1.0]),
+            "flip_x": np.array([-1.0, 1.0, 1.0]),
+            "flip_y": np.array([1.0, -1.0, 1.0]),
+            "flip_z": np.array([1.0, 1.0, -1.0]),
+            "flip_xy": np.array([-1.0, -1.0, 1.0]),
+            "flip_xz": np.array([-1.0, 1.0, -1.0]),
+            "flip_yz": np.array([1.0, -1.0, -1.0]),
+            "flip_xyz": np.array([-1.0, -1.0, -1.0]),
+        }
+        output_spaces = ["LPS", "RAS"]
         saved_paths = []
-        for suffix, axis_perm, axis_flips in variants:
-            variant_path = f"{base_root}_{suffix}.stl"
-            convert_plane_to_stl(
-                out_path=variant_path,
-                vol_geom=self.pack.geom,
-                cine_geom=cine_geom,
-                line_xy=line_xy,
-                roi_abs_pts=roi_abs,
-                vol_shape=vol_shape,
-                npix=self.Npix,
-                cine_shape=cine_img_raw.shape,
-                angle_offset_deg=angle_deg,
-                axis_permutation=axis_perm,
-                axis_flips=axis_flips,
-                output_space="LPS",
-            )
-            if os.path.exists(variant_path):
-                saved_paths.append(variant_path)
+        for space in output_spaces:
+            for perm_label, axis_perm in axis_permutations.items():
+                for flip_label, axis_flips in flip_variants.items():
+                    suffix = f"{space.lower()}_{perm_label}_{flip_label}"
+                    variant_path = f"{base_root}_{suffix}.stl"
+                    convert_plane_to_stl(
+                        out_path=variant_path,
+                        vol_geom=self.pack.geom,
+                        cine_geom=cine_geom,
+                        line_xy=line_xy,
+                        roi_abs_pts=roi_abs,
+                        vol_shape=vol_shape,
+                        npix=self.Npix,
+                        cine_shape=cine_img_raw.shape,
+                        angle_offset_deg=angle_deg,
+                        axis_permutation=axis_perm,
+                        axis_flips=axis_flips,
+                        output_space=space,
+                    )
+                    if os.path.exists(variant_path):
+                        saved_paths.append(variant_path)
         if not saved_paths:
             self.memo.appendPlainText(f"STL save failed: {out_path}")
             return
