@@ -1458,6 +1458,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.line_norm[t] = self._default_line_norm()
         line_xy = self._get_active_line_abs_raw(t)
         roi_abs = self._roi_abs_points_from_item()
+        if roi_abs is not None and len(roi_abs) > 0:
+            roi_abs = roi_abs.copy()
+            roi_abs[:, 1] = (self.Npix - 1) - roi_abs[:, 1]
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
