@@ -1053,7 +1053,19 @@ class ValveTracker(QtWidgets.QMainWindow):
         chk = self.cine_view_checks.get(cine_key)
         if view is None or chk is None:
             return
-        view.setVisible(bool(chk.isChecked()))
+        visible = bool(chk.isChecked())
+        view.setVisible(visible)
+        if visible:
+            img_item = view.getImageItem()
+            if img_item is not None and img_item.image is not None:
+                h, w = img_item.image.shape[:2]
+                view.getView().setRange(xRange=(0, w), yRange=(0, h), padding=0.0)
+            self._view_ranges[f"cine:{cine_key}"] = None
+            if sum(1 for c in self.cine_view_checks.values() if c.isChecked()) == 1:
+                try:
+                    view.getView().autoRange()
+                except Exception:
+                    pass
 
     def _emit_geometry_debug(self):
         geom = self.pack.geom
