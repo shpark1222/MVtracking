@@ -1476,22 +1476,41 @@ class ValveTracker(QtWidgets.QMainWindow):
         out_dir = os.path.dirname(out_path)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        convert_plane_to_stl(
-            out_path=out_path,
-            vol_geom=self.pack.geom,
-            cine_geom=cine_geom,
-            line_xy=line_xy,
-            roi_abs_pts=roi_abs,
-            vol_shape=vol_shape,
-            npix=self.Npix,
-            cine_shape=cine_img_raw.shape,
-            angle_offset_deg=angle_deg,
-            output_space="LPS",
-        )
-        if not os.path.exists(out_path):
+        base_root, _ = os.path.splitext(out_path)
+        variants = [
+            ("col_row", (0, 1, 2), np.array([1.0, 1.0, 1.0])),
+            ("flip_col_row", (0, 1, 2), np.array([-1.0, 1.0, 1.0])),
+            ("col_flip_row", (0, 1, 2), np.array([1.0, -1.0, 1.0])),
+            ("flip_col_flip_row", (0, 1, 2), np.array([-1.0, -1.0, 1.0])),
+            ("swap_col_row", (1, 0, 2), np.array([1.0, 1.0, 1.0])),
+            ("swap_flip_col_row", (1, 0, 2), np.array([-1.0, 1.0, 1.0])),
+            ("swap_col_flip_row", (1, 0, 2), np.array([1.0, -1.0, 1.0])),
+            ("swap_flip_col_flip_row", (1, 0, 2), np.array([-1.0, -1.0, 1.0])),
+        ]
+        saved_paths = []
+        for suffix, axis_perm, axis_flips in variants:
+            variant_path = f"{base_root}_{suffix}.stl"
+            convert_plane_to_stl(
+                out_path=variant_path,
+                vol_geom=self.pack.geom,
+                cine_geom=cine_geom,
+                line_xy=line_xy,
+                roi_abs_pts=roi_abs,
+                vol_shape=vol_shape,
+                npix=self.Npix,
+                cine_shape=cine_img_raw.shape,
+                angle_offset_deg=angle_deg,
+                axis_permutation=axis_perm,
+                axis_flips=axis_flips,
+                output_space="LPS",
+            )
+            if os.path.exists(variant_path):
+                saved_paths.append(variant_path)
+        if not saved_paths:
             self.memo.appendPlainText(f"STL save failed: {out_path}")
             return
-        self.memo.appendPlainText(f"STL saved: {out_path}")
+        for saved in saved_paths:
+            self.memo.appendPlainText(f"STL saved: {saved}")
 
     def _normalize_image(self, img: np.ndarray, vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
         data = img.astype(np.float64)
