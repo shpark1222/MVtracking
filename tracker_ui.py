@@ -115,7 +115,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(8)
         layout.setRowStretch(0, 3)
-        layout.setRowStretch(1, 2)
+        layout.setRowStretch(1, 3)
         layout.setRowStretch(2, 0)
         layout.setColumnStretch(0, 1)
 
@@ -230,6 +230,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl_row.addWidget(self.btn_roi_forward)
 
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
+        self.btn_vel_gif = QtWidgets.QPushButton("Export Colormap GIF")
 
         self.chk_apply_segments = QtWidgets.QCheckBox("Apply segments")
         self.segment_selector = QtWidgets.QComboBox()
@@ -338,7 +339,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         bottom_right.addLayout(chart_log_row, stretch=1)
 
         chart_box = QtWidgets.QVBoxLayout()
-        chart_log_row.addLayout(chart_box, stretch=3)
+        chart_log_row.addLayout(chart_box, stretch=4)
 
         chart_row = QtWidgets.QHBoxLayout()
         chart_row.addWidget(QtWidgets.QLabel("Chart"))
@@ -367,7 +368,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.plot.set_phase_callback(self.on_plot_phase_selected)
 
         log_box = QtWidgets.QVBoxLayout()
-        chart_log_row.addLayout(log_box, stretch=2)
+        chart_log_row.addLayout(log_box, stretch=1)
         log_box.addWidget(QtWidgets.QLabel("Log"))
         self.memo = QtWidgets.QPlainTextEdit()
         self.memo.setReadOnly(True)
@@ -405,7 +406,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_compute = QtWidgets.QPushButton("Compute current")
         self.btn_all = QtWidgets.QPushButton("Compute all")
         self.btn_edit = QtWidgets.QPushButton("Edit ROI: OFF")
-        self.btn_copy = QtWidgets.QPushButton("Copy all phases")
+        self.btn_copy = QtWidgets.QPushButton("Copy data")
+        self.btn_copy_regional = QtWidgets.QPushButton("Copy regional data")
+        self.copy_regional_selector = QtWidgets.QComboBox()
+        self.copy_regional_selector.addItems(["Current chart", "All metrics"])
         self.btn_save = QtWidgets.QPushButton("Save to MVtrack.h5")
         self.btn_convert_stl = QtWidgets.QPushButton("Convert STL")
         self.btn_cine_gif = QtWidgets.QPushButton("Export Cine GIF")
@@ -414,16 +418,20 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_all)
         btn_row.addWidget(self.btn_edit)
         btn_row.addWidget(self.btn_copy)
+        btn_row.addWidget(self.btn_copy_regional)
+        btn_row.addWidget(self.copy_regional_selector)
         btn_row.addWidget(self.btn_save)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
         btn_row.addWidget(self.btn_pcmra_gif)
+        btn_row.addWidget(self.btn_vel_gif)
         btn_row.addStretch(1)
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
         self.btn_edit.clicked.connect(self.toggle_edit)
-        self.btn_copy.clicked.connect(self.copy_current_to_clipboard)
+        self.btn_copy.clicked.connect(self.copy_data_to_clipboard)
+        self.btn_copy_regional.clicked.connect(self.copy_regional_data_to_clipboard)
         self.btn_roi_copy.clicked.connect(self.copy_roi_state)
         self.btn_roi_paste.clicked.connect(self.paste_roi_state)
         self.btn_roi_forward.clicked.connect(self.copy_roi_forward)
@@ -432,6 +440,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
         self.btn_brush.clicked.connect(self.toggle_brush_mode)
         self.btn_pcmra_gif.clicked.connect(self.export_pcmra_gif)
+        self.btn_vel_gif.clicked.connect(self.export_vel_gif)
         self.chk_plot_segments.stateChanged.connect(self.update_plot_for_selection)
         self.chk_flip_flow.stateChanged.connect(self.update_plot_for_selection)
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
@@ -540,6 +549,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_line_forward,
             self.btn_cine_gif,
             self.btn_pcmra_gif,
+            self.btn_vel_gif,
+            self.btn_copy_regional,
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
@@ -758,6 +769,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.memo.appendPlainText(f"Restored tracking state from: {st_path}")
 
+        self.compute_all()
         self.update_plot_for_selection()
 
     # ============================
@@ -1530,59 +1542,51 @@ class ValveTracker(QtWidgets.QMainWindow):
             p1 = pts[(i + 1) % len(pts)]
             self._draw_line(img, p0, p1, color)
 
-    def export_cine_gif(self):
+    def _grab_view_frame(self, widget: QtWidgets.QWidget) -> np.ndarray:
+        pixmap = widget.grab()
+        image = pixmap.toImage().convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
+        w = image.width()
+        h = image.height()
+        buf = image.bits()
+        buf.setsize(image.bytesPerLine() * h)
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, image.bytesPerLine() // 4, 4))
+        return arr[:, :w, :3].copy()
+
+    def _export_view_gif(self, widget: QtWidgets.QWidget, title: str, default_name: str) -> None:
         if imageio is None:
             QtWidgets.QMessageBox.warning(self, "MV tracker", "imageio is not installed.")
             return
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            title,
+            os.path.join(self.work_folder, default_name),
+            "GIF Files (*.gif)",
+        )
+        if not out_path:
+            return
+        frames = []
+        current_phase = int(self.slider.value()) - 1
+        for tt in range(self.Nt):
+            self.set_phase(tt)
+            QtWidgets.QApplication.processEvents()
+            frames.append(self._grab_view_frame(widget))
+        self.set_phase(current_phase)
+        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
+        self.memo.appendPlainText(f"GIF saved: {out_path}")
+
+    def export_cine_gif(self):
         if self.active_cine_key not in self.pack.cine_planes:
             return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save Cine GIF",
-            os.path.join(self.work_folder, f"cine_{self.active_cine_key}.gif"),
-            "GIF Files (*.gif)",
-        )
-        if not out_path:
+        view = self.cine_views.get(self.active_cine_key)
+        if view is None:
             return
-        frames = []
-        vmin, vmax = self._cine_levels
-        for tt in range(self.Nt):
-            img = self._get_cine_frame(self.active_cine_key, tt)
-            base = self._normalize_image(img, vmin, vmax)
-            rgb = np.stack([base, base, base], axis=-1)
-            line_xy = self._get_active_line_abs_raw(tt)
-            self._draw_line(rgb, line_xy[0], line_xy[1], (255, 255, 0))
-            frames.append(rgb)
-        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
-        self.memo.appendPlainText(f"Cine GIF saved: {out_path}")
+        self._export_view_gif(view, "Save Cine GIF", f"cine_{self.active_cine_key}.gif")
 
     def export_pcmra_gif(self):
-        if imageio is None:
-            QtWidgets.QMessageBox.warning(self, "MV tracker", "imageio is not installed.")
-            return
-        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Save PCMRA GIF",
-            os.path.join(self.work_folder, "pcmra_roi.gif"),
-            "GIF Files (*.gif)",
-        )
-        if not out_path:
-            return
-        frames = []
-        vmin, vmax = self._pcmra_levels
-        for tt in range(self.Nt):
-            Ipcm, _, _, _, _ = self.reslice_for_phase(tt)
-            base = self._normalize_image(Ipcm, vmin, vmax)
-            rgb = np.stack([base, base, base], axis=-1)
-            st = self.roi_state[tt]
-            if st is None:
-                st = self.default_poly_roi_state(Ipcm.shape)
-            abs_pts = self._abs_pts_from_state_safe(st, Ipcm.shape)
-            abs_pts = closed_spline_xy(abs_pts, n_out=400)
-            self._draw_polyline(rgb, abs_pts, (0, 255, 255))
-            frames.append(rgb)
-        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
-        self.memo.appendPlainText(f"PCMRA GIF saved: {out_path}")
+        self._export_view_gif(self.pcmra_view, "Save PCMRA GIF", "pcmra_view.gif")
+
+    def export_vel_gif(self):
+        self._export_view_gif(self.vel_view, "Save Colormap GIF", "colormap_view.gif")
 
     # ============================
     # ROI state
@@ -2251,7 +2255,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         dx = cols.astype(np.float64) - center_xy[0]
         dy = rows.astype(np.float64) - center_xy[1]
         seg_width = 2.0 * np.pi / float(n_segments)
-        angles = (np.arctan2(-dy, dx) - ref_angle + seg_width) % (2.0 * np.pi)
+        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
         seg_idx = np.floor(angles / seg_width).astype(int)
         seg_idx = np.clip(seg_idx, 0, n_segments - 1)
 
@@ -2264,7 +2268,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                 continue
             Q_m3s = float(np.nansum(Vn[rows[sel], cols[sel]]) * dA_m2)
             values.append(Q_m3s * 1e6)
-        return values
+        return self._rotate_segment_values(values, n_segments)
 
     def _segment_values_for_metric(
         self,
@@ -2285,7 +2289,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         dx = cols.astype(np.float64) - center_xy[0]
         dy = rows.astype(np.float64) - center_xy[1]
         seg_width = 2.0 * np.pi / float(n_segments)
-        angles = (np.arctan2(-dy, dx) - ref_angle + seg_width) % (2.0 * np.pi)
+        angles = (np.arctan2(-dy, dx) - ref_angle) % (2.0 * np.pi)
         seg_idx = np.floor(angles / seg_width).astype(int)
         seg_idx = np.clip(seg_idx, 0, n_segments - 1)
 
@@ -2322,7 +2326,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                     values.append(float(np.nanmean(Ivort[rr, cc])))
             else:
                 values.append(np.nan)
-        return values
+        return self._rotate_segment_values(values, n_segments)
 
     def _format_segments(self, values: Optional[List[float]]) -> str:
         if not values:
@@ -2332,6 +2336,15 @@ class ValveTracker(QtWidgets.QMainWindow):
             val = f"{v:.2f}" if np.isfinite(v) else "-"
             out.append(f"R{idx}:{val}")
         return "[" + ", ".join(out) + "]"
+
+    def _rotate_segment_values(self, values: List[float], n_segments: int) -> List[float]:
+        if not values:
+            return values
+        shift = 2 if n_segments == 6 else 1 if n_segments == 4 else 0
+        if shift == 0:
+            return values
+        shift = shift % n_segments
+        return values[-shift:] + values[:-shift]
 
     def _set_segment_anchor(self, point_xy: np.ndarray, shape_hw: Tuple[int, int]) -> None:
         contour = self._roi_contour_points(shape_hw)
@@ -2455,10 +2468,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         radius = float(np.nanmedian(dist)) * 0.7
         count = self._segment_count[t] if 0 <= t < self.Nt else 6
         seg_width = 2.0 * np.pi / float(count)
-        start_angle = ref_angle + seg_width
+        start_angle = ref_angle
+        label_shift = 2 if count == 6 else 1 if count == 4 else 0
         for idx in range(6):
             visible = idx < count and radius > 0
-            label = f"R{idx + 1}"
+            label_idx = (idx + label_shift) % count
+            label = f"R{label_idx + 1}"
             angle = start_angle + (idx + 0.5) * seg_width
             x = center[0] + radius * float(np.cos(angle))
             y = center[1] - radius * float(np.sin(angle))
@@ -2933,9 +2948,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.tracking_path = out_path
         self.memo.appendPlainText(f"Saved tracking state to: {out_path}")
 
-    def copy_current_to_clipboard(self):
-        header = [
-            "Phase",
+    def _metric_labels(self) -> List[str]:
+        return [
             "Flow rate (mL/s)",
             "Peak velocity (m/s)",
             "Mean velocity (m/s)",
@@ -2943,38 +2957,62 @@ class ValveTracker(QtWidgets.QMainWindow):
             "Peak vorticity (1/s)",
             "Mean vorticity (1/s)",
         ]
-        seg_count = 6 if self.segment_selector.currentText().startswith("6") else 4
-        if self.chk_plot_segments.isChecked():
-            for idx in range(seg_count):
-                header.append(f"R{idx + 1} ({self.chart_selector.currentText()})")
+
+    def _format_value(self, value: float) -> str:
+        return f"{value:.6f}" if np.isfinite(value) else ""
+
+    def copy_data_to_clipboard(self):
+        header = ["Phase"] + self._metric_labels()
         lines = ["\t".join(header)]
         for t in range(self.Nt):
-            Q = self.metrics_Q[t]
-            Vpk = self.metrics_Vpk[t]
-            Vmn = self.metrics_Vmn[t]
-            KE = self.metrics_KE[t]
-            VortPk = self.metrics_VortPk[t]
-            VortMn = self.metrics_VortMn[t]
-            q_text = f"{Q:.6f}" if np.isfinite(Q) else ""
-            vpk_text = f"{Vpk:.6f}" if np.isfinite(Vpk) else ""
-            vmn_text = f"{Vmn:.6f}" if np.isfinite(Vmn) else ""
-            ke_text = f"{KE:.6f}" if np.isfinite(KE) else ""
-            vortpk_text = f"{VortPk:.6f}" if np.isfinite(VortPk) else ""
-            vortmn_text = f"{VortMn:.6f}" if np.isfinite(VortMn) else ""
-            row = [f"{t + 1}", q_text, vpk_text, vmn_text, ke_text, vortpk_text, vortmn_text]
-            if self.chk_plot_segments.isChecked():
-                metric = self.chart_selector.currentText()
-                seg_values = self.metrics_seg6.get(metric) if seg_count == 6 else self.metrics_seg4.get(metric)
-                if seg_values and t < len(seg_values) and seg_values[t] is not None:
-                    for idx in range(seg_count):
-                        val = seg_values[t][idx] if idx < len(seg_values[t]) else np.nan
-                        row.append(f"{val:.6f}" if np.isfinite(val) else "")
-                else:
-                    row.extend([""] * seg_count)
+            row = [
+                f"{t + 1}",
+                self._format_value(self.metrics_Q[t]),
+                self._format_value(self.metrics_Vpk[t]),
+                self._format_value(self.metrics_Vmn[t]),
+                self._format_value(self.metrics_KE[t]),
+                self._format_value(self.metrics_VortPk[t]),
+                self._format_value(self.metrics_VortMn[t]),
+            ]
             lines.append("\t".join(row))
-        text = "\n".join(lines)
-        QtWidgets.QApplication.clipboard().setText(text)
-        self.memo.appendPlainText("Copied all phase metrics to clipboard.")
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        self.memo.appendPlainText("Copied contour metrics to clipboard.")
+
+    def _segment_values_for_phase(self, metric: str, t: int, seg_count: int) -> List[float]:
+        seg_values = self.metrics_seg6.get(metric) if seg_count == 6 else self.metrics_seg4.get(metric)
+        if not seg_values or t >= len(seg_values) or seg_values[t] is None:
+            return [np.nan] * seg_count
+        return [seg_values[t][idx] if idx < len(seg_values[t]) else np.nan for idx in range(seg_count)]
+
+    def copy_regional_data_to_clipboard(self):
+        seg_count = 6 if self.segment_selector.currentText().startswith("6") else 4
+        selection = self.copy_regional_selector.currentText()
+        lines = []
+        if selection == "Current chart":
+            metric = self.chart_selector.currentText()
+            header = ["Phase"] + [f"R{idx + 1} ({metric})" for idx in range(seg_count)]
+            lines.append("\t".join(header))
+            for t in range(self.Nt):
+                values = self._segment_values_for_phase(metric, t, seg_count)
+                row = [f"{t + 1}"] + [self._format_value(v) for v in values]
+                lines.append("\t".join(row))
+        else:
+            metrics = self._metric_labels()
+            header = ["Phase"]
+            for metric in metrics:
+                header.extend([f"R{idx + 1} ({metric})" for idx in range(seg_count)])
+            lines.append("\t".join(header))
+            for t in range(self.Nt):
+                row = [f"{t + 1}"]
+                for metric in metrics:
+                    values = self._segment_values_for_phase(metric, t, seg_count)
+                    row.extend([self._format_value(v) for v in values])
+                lines.append("\t".join(row))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        self.memo.appendPlainText("Copied regional metrics to clipboard.")
+
+    def copy_current_to_clipboard(self):
+        self.copy_data_to_clipboard()
 
     def _canonicalize_line_abs(self, pts_abs: np.ndarray) -> np.ndarray:
         a = np.asarray(pts_abs[0], dtype=np.float64)
