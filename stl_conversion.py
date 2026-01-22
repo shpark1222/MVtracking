@@ -132,7 +132,24 @@ def plane_roi_to_mask(
     return vol
 
 
-def write_ascii_stl(path: str, triangles: Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]):
+def _lps_to_ras(xyz: np.ndarray) -> np.ndarray:
+    return xyz * np.array([-1.0, -1.0, 1.0])
+
+
+def _apply_output_space(xyz: np.ndarray, output_space: str) -> np.ndarray:
+    space = output_space.upper()
+    if space == "LPS":
+        return xyz
+    if space == "RAS":
+        return _lps_to_ras(xyz)
+    raise ValueError(f"Unsupported output_space={output_space!r}. Expected 'LPS' or 'RAS'.")
+
+
+def write_ascii_stl(
+    path: str,
+    triangles: Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    output_space: str = "RAS",
+):
     with open(path, "w", encoding="utf-8") as f:
         f.write("solid mvtrack\n")
         for v0, v1, v2 in triangles:
@@ -143,6 +160,8 @@ def write_ascii_stl(path: str, triangles: Iterable[Tuple[np.ndarray, np.ndarray,
                 n = n / nn
             else:
                 n = np.array([0.0, 0.0, 0.0])
+            verts = _apply_output_space(verts, output_space)
+            n = _apply_output_space(n, output_space)
             f.write(f"  facet normal {n[0]:.6e} {n[1]:.6e} {n[2]:.6e}\n")
             f.write("    outer loop\n")
             for v in verts:
@@ -162,6 +181,7 @@ def convert_plane_to_stl(
     npix: int = 192,
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
+    output_space: str = "RAS",
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
@@ -171,4 +191,4 @@ def convert_plane_to_stl(
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
     )
-    write_ascii_stl(out_path, triangles)
+    write_ascii_stl(out_path, triangles, output_space=output_space)
