@@ -171,6 +171,15 @@ def write_ascii_stl(
         f.write("endsolid mvtrack\n")
 
 
+def _axis_transform_vertices(
+    vertices: np.ndarray,
+    axis_permutation: Tuple[int, int, int],
+    axis_flips: np.ndarray,
+) -> np.ndarray:
+    reordered = vertices[..., list(axis_permutation)]
+    return reordered * axis_flips
+
+
 def convert_plane_to_stl(
     out_path: str,
     vol_geom: VolGeom,
@@ -182,6 +191,8 @@ def convert_plane_to_stl(
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
     output_space: str = "RAS",
+    axis_permutation: Tuple[int, int, int] = (0, 1, 2),
+    axis_flips: np.ndarray | None = None,
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
@@ -191,4 +202,12 @@ def convert_plane_to_stl(
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
     )
-    write_ascii_stl(out_path, triangles, output_space=output_space)
+    if axis_flips is None:
+        axis_flips = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+    axis_flips = np.asarray(axis_flips, dtype=np.float64).reshape(3)
+    transformed = []
+    for v0, v1, v2 in triangles:
+        verts = np.vstack([v0, v1, v2])
+        verts = _axis_transform_vertices(verts, axis_permutation, axis_flips)
+        transformed.append((verts[0], verts[1], verts[2]))
+    write_ascii_stl(out_path, transformed, output_space=output_space)

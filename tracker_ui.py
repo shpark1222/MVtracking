@@ -1459,11 +1459,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_xy = self._get_active_line_abs_raw(t)
         roi_abs = self._roi_abs_points_from_item()
         if roi_abs is not None and len(roi_abs) > 0:
-            roi_abs = roi_abs[:, [1, 0]]
+            roi_abs = roi_abs.copy()
+            roi_abs[:, 1] = (self.Npix - 1) - roi_abs[:, 1]
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
+        axis_perm = self._volume_axis_permutation()
+        axis_flips = self._volume_axis_flips()
 
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -1486,6 +1489,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             npix=self.Npix,
             cine_shape=cine_img_raw.shape,
             angle_offset_deg=angle_deg,
+            axis_permutation=axis_perm,
+            axis_flips=axis_flips,
+            output_space="LPS",
         )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
