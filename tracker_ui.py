@@ -1490,6 +1490,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             angle_offset_deg=angle_deg,
             axis_permutation=axis_perm,
             axis_flips=axis_flips,
+            output_space="LPS",
         )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
