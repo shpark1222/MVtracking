@@ -1462,6 +1462,24 @@ class ValveTracker(QtWidgets.QMainWindow):
             roi_abs = roi_abs.copy()
             roi_abs[:, 1] = (self.Npix - 1) - roi_abs[:, 1]
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        perm = self._volume_axis_permutation()
+        flips = self._volume_axis_flips()
+
+        def _transform_axis(vec: np.ndarray) -> np.ndarray:
+            vec = np.asarray(vec, dtype=np.float64).reshape(3)
+            return vec[list(perm)] * flips
+
+        cine_iop = cine_geom.iop.reshape(6)
+        cine_geom = CineGeom(
+            ipp=_transform_axis(cine_geom.ipp),
+            iop=np.concatenate([_transform_axis(cine_iop[:3]), _transform_axis(cine_iop[3:6])]),
+            ps=np.asarray(cine_geom.ps, dtype=np.float64).copy(),
+            axis_map={
+                key: _transform_axis(val)
+                for key, val in (cine_geom.axis_map or {}).items()
+            }
+            or None,
+        )
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         vol_shape = self.pack.vel.shape[:3]
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
