@@ -421,11 +421,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_copy_regional)
         btn_row.addWidget(self.copy_regional_selector)
         btn_row.addWidget(self.btn_save)
+        btn_row.addStretch(1)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
         btn_row.addWidget(self.btn_pcmra_gif)
         btn_row.addWidget(self.btn_vel_gif)
-        btn_row.addStretch(1)
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
@@ -520,7 +520,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_line_copy = QtWidgets.QPushButton("Copy line")
         self.btn_line_paste = QtWidgets.QPushButton("Paste line")
         self.btn_line_forward = QtWidgets.QPushButton("Copy line forward")
-        self.btn_plane_overlay = QtWidgets.QPushButton("Plane Overlay")
         self.spin_line_angle = QtWidgets.QDoubleSpinBox()
         self.spin_line_angle.setDecimals(1)
         self.spin_line_angle.setRange(-90.0, 90.0)
@@ -529,7 +528,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_ctrl_row.addWidget(self.btn_line_copy)
         line_ctrl_row.addWidget(self.btn_line_paste)
         line_ctrl_row.addWidget(self.btn_line_forward)
-        line_ctrl_row.addWidget(self.btn_plane_overlay)
         line_ctrl_row.addWidget(QtWidgets.QLabel("Angle (deg)"))
         line_ctrl_row.addWidget(self.spin_line_angle)
         line_ctrl_row.addStretch(1)
@@ -537,7 +535,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_line_copy.clicked.connect(self.copy_line_state)
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
-        self.btn_plane_overlay.clicked.connect(self.show_plane_overlay)
         self.spin_line_angle.valueChanged.connect(self.on_line_angle_changed)
 
         for btn in (
@@ -981,58 +978,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         x = coords[:, 0]
         y = coords[:, 1]
         plot.plot(x, y, pen=pg.mkPen(color=color, width=2), name=label)
-
-    def show_plane_overlay(self):
-        t = int(self.slider.value()) - 1
-        t = int(np.clip(t, 0, self.Nt - 1))
-        pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
-        mip_xy = np.max(pcmra3d, axis=2)
-        mip_xz = np.max(pcmra3d, axis=0).T
-        mip_yz = np.max(pcmra3d, axis=1).T
-
-        dlg = QtWidgets.QDialog(self)
-        dlg.setWindowTitle("Plane Overlay (PCMRA MIPs)")
-        dlg.resize(1200, 450)
-        layout = QtWidgets.QVBoxLayout(dlg)
-        grid = pg.GraphicsLayoutWidget()
-        layout.addWidget(grid)
-
-        plot_xy = grid.addPlot(row=0, col=0, title="XY (MIP over Z)")
-        plot_xz = grid.addPlot(row=0, col=1, title="XZ (MIP over Y)")
-        plot_yz = grid.addPlot(row=0, col=2, title="YZ (MIP over X)")
-
-        img_xy = pg.ImageItem(mip_xy)
-        img_xz = pg.ImageItem(mip_xz)
-        img_yz = pg.ImageItem(mip_yz)
-        plot_xy.addItem(img_xy)
-        plot_xz.addItem(img_xz)
-        plot_yz.addItem(img_yz)
-
-        plot_xy.setAspectLocked(True)
-        plot_xz.setAspectLocked(True)
-        plot_yz.setAspectLocked(True)
-
-        cine_colors = {"2ch": "r", "3ch": "m", "4ch": "c"}
-        cine_keys = [k for k in ("2ch", "3ch", "4ch") if k in self.pack.cine_planes]
-        if not cine_keys:
-            cine_keys = [self.active_cine_key]
-
-        for cine_key in cine_keys:
-            cine_img_raw = self._get_cine_frame_raw(cine_key, t)
-            H_raw, W_raw = cine_img_raw.shape
-            if self.line_norm[t] is None:
-                self.line_norm[t] = self._default_line_norm()
-            line_xy = self._norm_to_abs_line(self.line_norm[t], H_raw, W_raw)
-            cine_geom = self._get_cine_geom_raw(cine_key)
-            patient_xyz = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=(H_raw, W_raw))
-            vox = self._patient_to_voxel(patient_xyz)
-
-            color = cine_colors.get(cine_key, "y")
-            self._overlay_line_on_plot(plot_xy, vox[:, [1, 0]], color, cine_key)
-            self._overlay_line_on_plot(plot_xz, vox[:, [1, 2]], color, cine_key)
-            self._overlay_line_on_plot(plot_yz, vox[:, [0, 2]], color, cine_key)
-
-        dlg.exec()
 
     def _default_line_norm(self) -> np.ndarray:
         return np.array([[0.45, 0.55], [0.60, 0.45]], dtype=np.float64)
@@ -1547,9 +1492,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         image = pixmap.toImage().convertToFormat(QtGui.QImage.Format.Format_RGBA8888)
         w = image.width()
         h = image.height()
-        buf = image.bits()
-        buf.setsize(image.bytesPerLine() * h)
-        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, image.bytesPerLine() // 4, 4))
+        bytes_per_line = image.bytesPerLine()
+        buf = image.bits().tobytes()
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, bytes_per_line // 4, 4))
         return arr[:, :w, :3].copy()
 
     def _export_view_gif(self, widget: QtWidgets.QWidget, title: str, default_name: str) -> None:

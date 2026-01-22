@@ -31,7 +31,7 @@ class PlotCanvas(FigureCanvas):
         self.ax.set_ylabel(label)
         self.ax.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.0)
         try:
-            self.fig.tight_layout(rect=[0, 0, 0.98, 1])
+            self.fig.tight_layout(rect=[0, 0, 1.0, 1])
         except Exception:
             pass
         if self._phase_line is not None:
