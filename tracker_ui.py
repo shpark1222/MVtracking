@@ -861,6 +861,8 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _apply_volume_transform(self):
         perm = self._volume_axis_permutation()
         flips = self._volume_axis_flips()
+        base_shape = self._base_vel.shape[:3]
+        perm_shape = np.array(base_shape, dtype=np.int64)[list(perm)]
 
         def _permute_volume(arr: np.ndarray) -> np.ndarray:
             if arr is None:
@@ -882,8 +884,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._base_vortmag is not None:
             self.pack.vortmag = _permute_volume(self._base_vortmag)
 
-        self.pack.geom.orgn4 = self._base_orgn4.copy()
-        self.pack.geom.A = self._base_A.copy()
+        orgn4 = self._base_orgn4.copy().reshape(3)
+        A = self._base_A.copy()
+        A = A[:, list(perm)]
+        for axis in range(3):
+            if flips[axis] < 0:
+                axis_vec = A[:, axis].copy()
+                orgn4 = orgn4 + (float(perm_shape[axis]) - 1.0) * axis_vec
+                A[:, axis] = -axis_vec
+
+        self.pack.geom.orgn4 = orgn4
+        self.pack.geom.A = A
         print(
             f"[mvtracking] flip/swap perm={perm} flips={flips.tolist()} "
             f"orgn4={np.array2string(self.pack.geom.orgn4, precision=4, separator=',')} "
@@ -1203,6 +1214,24 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
         vel5d = self.pack.vel.astype(np.float32)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        perm = self._volume_axis_permutation()
+        flips = self._volume_axis_flips()
+
+        def _transform_axis(vec: np.ndarray) -> np.ndarray:
+            vec = np.asarray(vec, dtype=np.float64).reshape(3)
+            return vec[list(perm)] * flips
+
+        cine_iop = cine_geom.iop.reshape(6)
+        cine_geom = CineGeom(
+            ipp=_transform_axis(cine_geom.ipp),
+            iop=np.concatenate([_transform_axis(cine_iop[:3]), _transform_axis(cine_iop[3:6])]),
+            ps=np.asarray(cine_geom.ps, dtype=np.float64).copy(),
+            axis_map={
+                key: _transform_axis(val)
+                for key, val in (cine_geom.axis_map or {}).items()
+            }
+            or None,
+        )
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
 
