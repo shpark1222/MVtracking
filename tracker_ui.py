@@ -97,6 +97,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.brush_mode = False
         self.brush_radius = 3.0
         self.brush_strength = 0.02
+        self.play_fps = 10.0
+        self._play_timer = QtCore.QTimer(self)
         self.line_angle = [0.0] * self.Nt
         self.metrics_seg4 = {}
         self.metrics_seg6 = {}
@@ -387,10 +389,10 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.lbl_segments = QtWidgets.QLabel("Segments: -")
 
+        self.lbl_segments.setVisible(False)
         for w in [
             self.lbl_phase,
             self.lbl_Q,
-            self.lbl_segments,
             self.lbl_Vpk,
             self.lbl_Vmn,
             self.lbl_KE,
@@ -485,6 +487,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         redo_action.triggered.connect(self.redo_last_action)
         self.addAction(redo_action)
 
+        play_action = QtGui.QAction(self)
+        play_action.setShortcut(QtGui.QKeySequence(QtCore.Qt.Key.Key_Space))
+        play_action.setShortcutContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+        play_action.triggered.connect(lambda: self.toggle_playback(not self.btn_play.isChecked()))
+        self.addAction(play_action)
+
 
         # slider
         self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -496,7 +504,23 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.slider.setTickInterval(1)
         self.slider.setTracking(True)
         self.slider.valueChanged.connect(self.on_phase_changed)
-        layout.addWidget(self.slider, 2, 0, 1, 1)
+
+        self.btn_play = QtWidgets.QPushButton("Play")
+        self.btn_play.setCheckable(True)
+        self.btn_play.toggled.connect(self.toggle_playback)
+        self.spin_fps = QtWidgets.QDoubleSpinBox()
+        self.spin_fps.setDecimals(1)
+        self.spin_fps.setRange(1.0, 60.0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(self.play_fps)
+        self.spin_fps.valueChanged.connect(self._on_fps_changed)
+
+        slider_row = QtWidgets.QHBoxLayout()
+        slider_row.addWidget(self.btn_play)
+        slider_row.addWidget(QtWidgets.QLabel("FPS"))
+        slider_row.addWidget(self.spin_fps)
+        slider_row.addWidget(self.slider, stretch=1)
+        layout.addLayout(slider_row, 2, 0, 1, 1)
 
         # wheel filter
         self._wheel_filter = _WheelToSliderFilter(self.slider)
@@ -573,6 +597,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
 
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
+        self._play_timer.timeout.connect(self._advance_playback)
 
         # try restore MVtrack.h5
         if restore_state:
@@ -586,6 +611,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.apply_pcmra_levels()
         self.apply_level_range()
         self._apply_levels_if_set()
+        if self._restored_state:
+            self.compute_all()
+            self.update_plot_for_selection()
 
     # ============================
     # Restore state
@@ -1063,6 +1091,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.set_phase(v - 1)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if event.key() == QtCore.Qt.Key.Key_Space:
+            self.toggle_playback(not self.btn_play.isChecked())
+            return
         if isinstance(self.focusWidget(), (QtWidgets.QAbstractSpinBox, QtWidgets.QLineEdit)):
             super().keyPressEvent(event)
             return
@@ -1516,7 +1547,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             QtWidgets.QApplication.processEvents()
             frames.append(self._grab_view_frame(widget))
         self.set_phase(current_phase)
-        imageio.mimsave(out_path, frames, duration=0.1, loop=0)
+        duration = 1.0 / max(self.play_fps, 1.0)
+        imageio.mimsave(out_path, frames, duration=duration, loop=0)
         self.memo.appendPlainText(f"GIF saved: {out_path}")
 
     def export_cine_gif(self):
@@ -2285,7 +2317,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _rotate_segment_values(self, values: List[float], n_segments: int) -> List[float]:
         if not values:
             return values
-        shift = 2 if n_segments == 6 else 1 if n_segments == 4 else 0
+        shift = 1 if n_segments in (4, 6) else 0
         if shift == 0:
             return values
         shift = shift % n_segments
@@ -2414,7 +2446,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         count = self._segment_count[t] if 0 <= t < self.Nt else 6
         seg_width = 2.0 * np.pi / float(count)
         start_angle = ref_angle
-        label_shift = 2 if count == 6 else 1 if count == 4 else 0
+        label_shift = 1 if count in (4, 6) else 0
         for idx in range(6):
             visible = idx < count and radius > 0
             label_idx = (idx + label_shift) % count
@@ -2444,6 +2476,30 @@ class ValveTracker(QtWidgets.QMainWindow):
         menu_enabled = not self._show_segments
         self.pcmra_view.getView().setMenuEnabled(menu_enabled)
         self.vel_view.getView().setMenuEnabled(menu_enabled)
+
+    def _on_fps_changed(self, value: float):
+        self.play_fps = float(value)
+        if self.btn_play.isChecked():
+            self._play_timer.setInterval(int(round(1000.0 / max(self.play_fps, 1.0))))
+
+    def toggle_playback(self, enabled: bool):
+        self.btn_play.blockSignals(True)
+        self.btn_play.setChecked(bool(enabled))
+        self.btn_play.blockSignals(False)
+        if enabled:
+            self.btn_play.setText("Pause")
+            self._play_timer.start(int(round(1000.0 / max(self.play_fps, 1.0))))
+        else:
+            self.btn_play.setText("Play")
+            self._play_timer.stop()
+
+    def _advance_playback(self):
+        if not self.btn_play.isChecked():
+            return
+        next_val = self.slider.value() + 1
+        if next_val > self.slider.maximum():
+            next_val = self.slider.minimum()
+        self.slider.setValue(next_val)
 
     def toggle_brush_mode(self):
         self.brush_mode = not self.brush_mode
