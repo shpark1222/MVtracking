@@ -1574,6 +1574,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         arr = np.frombuffer(buf, dtype=np.uint8).reshape((h, bytes_per_line // 4, 4))
         return arr[:, :w, :3].copy()
 
+    def _render_widget_for_capture(self, widget: QtWidgets.QWidget) -> None:
+        widget.repaint()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
+
     def _export_view_gif(self, widget: QtWidgets.QWidget, title: str, default_name: str) -> None:
         if imageio is None:
             QtWidgets.QMessageBox.warning(self, "MV tracker", "imageio is not installed.")
@@ -1591,9 +1595,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         for tt in range(self.Nt):
             self.set_phase(tt)
             QtWidgets.QApplication.processEvents()
+            self._render_widget_for_capture(widget)
             frames.append(self._grab_view_frame(widget))
         self.set_phase(current_phase)
-        duration = 1.0 / max(self.play_fps, 1.0)
+        duration = 1.0 / max(float(self.spin_fps.value()), 1.0)
         imageio.mimsave(out_path, frames, duration=duration, loop=0)
         self.memo.appendPlainText(f"GIF saved: {out_path}")
 
@@ -2728,7 +2733,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._restore_view_range(key)
 
     def update_metric_labels(self, t: int):
-        Q = self.metrics_Q[t]
+        flip = -1.0 if self.chk_flip_flow.isChecked() else 1.0
+        Q = self.metrics_Q[t] * flip
         Vpk = self.metrics_Vpk[t]
         Vmn = self.metrics_Vmn[t]
         KE = self.metrics_KE[t]
@@ -3011,10 +3017,11 @@ class ValveTracker(QtWidgets.QMainWindow):
     def copy_data_to_clipboard(self):
         header = ["Phase"] + self._metric_labels()
         lines = ["\t".join(header)]
+        flip = -1.0 if self.chk_flip_flow.isChecked() else 1.0
         for t in range(self.Nt):
             row = [
                 f"{t + 1}",
-                self._format_value(self.metrics_Q[t]),
+                self._format_value(self.metrics_Q[t] * flip),
                 self._format_value(self.metrics_Vpk[t]),
                 self._format_value(self.metrics_Vmn[t]),
                 self._format_value(self.metrics_KE[t]),
@@ -3034,6 +3041,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     def copy_regional_data_to_clipboard(self):
         seg_count = 6 if self.segment_selector.currentText().startswith("6") else 4
         selection = self.copy_regional_selector.currentText()
+        flip = -1.0 if self.chk_flip_flow.isChecked() else 1.0
         lines = []
         if selection == "Current chart":
             metric = self.chart_selector.currentText()
@@ -3041,6 +3049,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             lines.append("\t".join(header))
             for t in range(self.Nt):
                 values = self._segment_values_for_phase(metric, t, seg_count)
+                if metric == "Flow rate (mL/s)":
+                    values = [value * flip for value in values]
                 row = [f"{t + 1}"] + [self._format_value(v) for v in values]
                 lines.append("\t".join(row))
         else:
@@ -3053,6 +3063,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 row = [f"{t + 1}"]
                 for metric in metrics:
                     values = self._segment_values_for_phase(metric, t, seg_count)
+                    if metric == "Flow rate (mL/s)":
+                        values = [value * flip for value in values]
                     row.extend([self._format_value(v) for v in values])
                 lines.append("\t".join(row))
         QtWidgets.QApplication.clipboard().setText("\n".join(lines))
