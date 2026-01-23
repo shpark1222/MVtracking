@@ -40,13 +40,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.work_folder = work_folder
         self.tracking_path = tracking_path
 
-        self._base_pcmra = pack.pcmra.copy()
-        self._base_vel = pack.vel.copy()
-        self._base_ke = pack.ke.copy() if pack.ke is not None else None
-        self._base_vortmag = pack.vortmag.copy() if pack.vortmag is not None else None
-        self._base_orgn4 = pack.geom.orgn4.copy()
-        self._base_A = pack.geom.A.copy()
-
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
 
@@ -575,25 +568,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
-        cine_xform_row = QtWidgets.QHBoxLayout()
-        cine_xform_row.addWidget(QtWidgets.QLabel("Flip"))
-        self.chk_cine_flip_x = QtWidgets.QCheckBox("X")
-        self.chk_cine_flip_y = QtWidgets.QCheckBox("Y")
-        self.chk_cine_flip_z = QtWidgets.QCheckBox("Z")
-        cine_xform_row.addWidget(self.chk_cine_flip_x)
-        cine_xform_row.addWidget(self.chk_cine_flip_y)
-        cine_xform_row.addWidget(self.chk_cine_flip_z)
-        cine_xform_row.addWidget(QtWidgets.QLabel("Swap"))
-        self.cine_swap_selector = QtWidgets.QComboBox()
-        self.cine_swap_selector.addItems(
-            ["X Y Z", "X Z Y", "Y X Z", "Y Z X", "Z X Y", "Z Y X"]
-        )
-        cine_xform_row.addWidget(self.cine_swap_selector)
-        self.btn_cine_apply = QtWidgets.QPushButton("Apply")
-        cine_xform_row.addWidget(self.btn_cine_apply)
-        cine_xform_row.addStretch(1)
-        left_box.addLayout(cine_xform_row)
-        self.btn_cine_apply.clicked.connect(self.on_cine_transform_changed)
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
 
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
@@ -757,16 +731,13 @@ class ValveTracker(QtWidgets.QMainWindow):
             vel_auto_once = json.loads(st.get("vel_auto_once_json", "{}"))
             cine_levels = json.loads(st.get("cine_levels_json", "[null, null]"))
             pcmra_levels = json.loads(st.get("pcmra_levels_json", "[null, null]"))
-            cine_flip = json.loads(st.get("cine_flip_json", "[false, false, false]"))
         except Exception:
             display_levels = {}
             vel_auto_once = {}
             cine_levels = [None, None]
             pcmra_levels = [None, None]
-            cine_flip = [False, False, False]
         cine_auto_once = bool(st.get("cine_auto_once", 1))
         pcmra_auto_once = bool(st.get("pcmra_auto_once", 1))
-        cine_swap = st.get("cine_swap", "X Y Z")
 
         for key, val in display_levels.items():
             if key in self._display_levels and isinstance(val, (list, tuple)) and len(val) == 2:
@@ -782,15 +753,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._cine_auto_once = bool(cine_auto_once)
         self._pcmra_auto_once = bool(pcmra_auto_once)
 
-        if isinstance(cine_flip, (list, tuple)) and len(cine_flip) == 3:
-            self.chk_cine_flip_x.setChecked(bool(cine_flip[0]))
-            self.chk_cine_flip_y.setChecked(bool(cine_flip[1]))
-            self.chk_cine_flip_z.setChecked(bool(cine_flip[2]))
-        if isinstance(cine_swap, str) and cine_swap in [self.cine_swap_selector.itemText(i) for i in range(self.cine_swap_selector.count())]:
-            self.cine_swap_selector.setCurrentText(cine_swap)
-
         self._sync_level_controls_from_state()
-        self.on_cine_transform_changed()
 
         self.memo.appendPlainText(f"Restored tracking state from: {st_path}")
 
@@ -833,71 +796,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         idx = int(np.clip(idx, 0, NtC - 1))
         return cine[:, :, idx].astype(np.float32)
 
-    def _volume_axis_permutation(self) -> Tuple[int, int, int]:
-        mapping = {
-            "XYZ": (0, 1, 2),
-            "XZY": (0, 2, 1),
-            "YXZ": (1, 0, 2),
-            "YZX": (1, 2, 0),
-            "ZXY": (2, 0, 1),
-            "ZYX": (2, 1, 0),
-        }
-        key = self.cine_swap_selector.currentText().replace(" ", "")
-        return mapping.get(key, (0, 1, 2))
-
-    def _volume_axis_flips(self) -> np.ndarray:
-        return np.array(
-            [
-                -1.0 if self.chk_cine_flip_x.isChecked() else 1.0,
-                -1.0 if self.chk_cine_flip_y.isChecked() else 1.0,
-                -1.0 if self.chk_cine_flip_z.isChecked() else 1.0,
-            ],
-            dtype=np.float64,
-        )
-
     def _get_cine_geom_raw(self, cine_key: str) -> CineGeom:
         return self.pack.cine_planes[cine_key]["geom"]
-
-    def _apply_volume_transform(self):
-        perm = self._volume_axis_permutation()
-        flips = self._volume_axis_flips()
-
-        def _permute_volume(arr: np.ndarray) -> np.ndarray:
-            if arr is None:
-                return arr
-            if arr.ndim < 3:
-                return arr
-            axes = list(range(arr.ndim))
-            axes[:3] = [perm[0], perm[1], perm[2]]
-            out = np.transpose(arr, axes)
-            for axis in range(3):
-                if flips[axis] < 0:
-                    out = np.flip(out, axis=axis)
-            return out
-
-        self.pack.pcmra = _permute_volume(self._base_pcmra)
-        self.pack.vel = _permute_volume(self._base_vel)
-        if self._base_ke is not None:
-            self.pack.ke = _permute_volume(self._base_ke)
-        if self._base_vortmag is not None:
-            self.pack.vortmag = _permute_volume(self._base_vortmag)
-
-        self.pack.geom.orgn4 = self._base_orgn4.copy()
-        self.pack.geom.A = self._base_A.copy()
-        print(
-            f"[mvtracking] flip/swap perm={perm} flips={flips.tolist()} "
-            f"orgn4={np.array2string(self.pack.geom.orgn4, precision=4, separator=',')} "
-            f"A0={np.array2string(self.pack.geom.A[:, 0], precision=4, separator=',')}"
-        )
-
-    def on_cine_transform_changed(self):
-        self._apply_volume_transform()
-        self._view_ranges["pcmra"] = None
-        self._view_ranges["vel"] = None
-        cur = int(self.slider.value()) - 1
-        cur = int(np.clip(cur, 0, self.Nt - 1))
-        self._cur_phase = None
-        self.set_phase(cur)
 
     def copy_line_state(self):
         t = int(self.slider.value()) - 1
@@ -1476,53 +1376,22 @@ class ValveTracker(QtWidgets.QMainWindow):
         out_dir = os.path.dirname(out_path)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        base_root, _ = os.path.splitext(out_path)
-        axis_permutations = {
-            "col_row_slice": (0, 1, 2),
-            "col_slice_row": (0, 2, 1),
-            "row_col_slice": (1, 0, 2),
-            "row_slice_col": (1, 2, 0),
-            "slice_col_row": (2, 0, 1),
-            "slice_row_col": (2, 1, 0),
-        }
-        flip_variants = {
-            "noflip": np.array([1.0, 1.0, 1.0]),
-            "flip_x": np.array([-1.0, 1.0, 1.0]),
-            "flip_y": np.array([1.0, -1.0, 1.0]),
-            "flip_z": np.array([1.0, 1.0, -1.0]),
-            "flip_xy": np.array([-1.0, -1.0, 1.0]),
-            "flip_xz": np.array([-1.0, 1.0, -1.0]),
-            "flip_yz": np.array([1.0, -1.0, -1.0]),
-            "flip_xyz": np.array([-1.0, -1.0, -1.0]),
-        }
-        output_spaces = ["LPS", "RAS"]
-        saved_paths = []
-        for space in output_spaces:
-            for perm_label, axis_perm in axis_permutations.items():
-                for flip_label, axis_flips in flip_variants.items():
-                    suffix = f"{space.lower()}_{perm_label}_{flip_label}"
-                    variant_path = f"{base_root}_{suffix}.stl"
-                    convert_plane_to_stl(
-                        out_path=variant_path,
-                        vol_geom=self.pack.geom,
-                        cine_geom=cine_geom,
-                        line_xy=line_xy,
-                        roi_abs_pts=roi_abs,
-                        vol_shape=vol_shape,
-                        npix=self.Npix,
-                        cine_shape=cine_img_raw.shape,
-                        angle_offset_deg=angle_deg,
-                        axis_permutation=axis_perm,
-                        axis_flips=axis_flips,
-                        output_space=space,
-                    )
-                    if os.path.exists(variant_path):
-                        saved_paths.append(variant_path)
-        if not saved_paths:
+        convert_plane_to_stl(
+            out_path=out_path,
+            vol_geom=self.pack.geom,
+            cine_geom=cine_geom,
+            line_xy=line_xy,
+            roi_abs_pts=roi_abs,
+            vol_shape=vol_shape,
+            npix=self.Npix,
+            cine_shape=cine_img_raw.shape,
+            angle_offset_deg=angle_deg,
+            output_space="RAS",
+        )
+        if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
             return
-        for saved in saved_paths:
-            self.memo.appendPlainText(f"STL saved: {saved}")
+        self.memo.appendPlainText(f"STL saved: {out_path}")
 
     def _normalize_image(self, img: np.ndarray, vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
         data = img.astype(np.float64)
@@ -2982,12 +2851,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             cine_auto_once=self._cine_auto_once,
             pcmra_levels=self._pcmra_levels,
             pcmra_auto_once=self._pcmra_auto_once,
-            cine_flip=(
-                self.chk_cine_flip_x.isChecked(),
-                self.chk_cine_flip_y.isChecked(),
-                self.chk_cine_flip_z.isChecked(),
-            ),
-            cine_swap=self.cine_swap_selector.currentText(),
             segment_payload=segment_payload,
             segment_count=6 if self.segment_selector.currentText().startswith("6") else 4,
             plot_segments=self.chk_plot_segments.isChecked(),

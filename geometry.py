@@ -71,10 +71,31 @@ def _normalize(vec: np.ndarray) -> np.ndarray:
     return vec / (n if n > 0 else 1e-12)
 
 
-def cine_display_axes(cine_geom: CineGeom) -> Dict[str, np.ndarray]:
+def _cine_geom_components(cine_geom: CineGeom) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    edges = cine_geom.edges
+    if edges is not None:
+        edges = np.asarray(edges, dtype=np.float64)
+        if edges.shape == (3, 4):
+            edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+        row_vec = edges[:3, 0]
+        col_vec = edges[:3, 1]
+        ps_row = float(np.linalg.norm(row_vec))
+        ps_col = float(np.linalg.norm(col_vec))
+        row_dir = row_vec / (ps_row if ps_row > 0 else 1e-12)
+        col_dir = col_vec / (ps_col if ps_col > 0 else 1e-12)
+        ipp = edges[:3, 3].astype(np.float64)
+        return ipp, row_dir, col_dir, ps_row, ps_col
+
+    ipp = cine_geom.ipp.reshape(3)
     iop = cine_geom.iop.reshape(6)
     col_dir = _normalize(iop[0:3])
     row_dir = _normalize(iop[3:6])
+    ps_row, ps_col = cine_geom.ps.reshape(2)
+    return ipp, row_dir, col_dir, float(ps_row), float(ps_col)
+
+
+def cine_display_axes(cine_geom: CineGeom) -> Dict[str, np.ndarray]:
+    _, row_dir, col_dir, _, _ = _cine_geom_components(cine_geom)
     n_cine = _normalize(np.cross(col_dir, row_dir))
 
     eP = np.array([0.0, 1.0, 0.0], dtype=np.float64)
@@ -107,8 +128,7 @@ def cine_display_pixel_to_patient(
     cine_shape: Tuple[int, int],
 ) -> np.ndarray:
     H, W = cine_shape
-    ps_row, ps_col = cine_geom.ps.reshape(2)
-    ipp = cine_geom.ipp.reshape(3)
+    ipp, row_dir, col_dir, ps_row, ps_col = _cine_geom_components(cine_geom)
     axes = cine_display_axes(cine_geom)
     x_disp = axes["x_disp"]
     y_disp = axes["y_disp"]
@@ -132,8 +152,7 @@ def cine_display_mapping(
     cine_shape: Tuple[int, int],
 ) -> Tuple[np.ndarray, np.ndarray]:
     H, W = cine_shape
-    ps_row, ps_col = cine_geom.ps.reshape(2)
-    ipp = cine_geom.ipp.reshape(3)
+    ipp, row_dir, col_dir, ps_row, ps_col = _cine_geom_components(cine_geom)
     axes = cine_display_axes(cine_geom)
     x_disp = axes["x_disp"]
     y_disp = axes["y_disp"]
@@ -166,11 +185,7 @@ def cine_line_to_patient_xyz(
 ) -> np.ndarray:
     if cine_shape is not None:
         return cine_display_pixel_to_patient(line_xy, cine_geom, cine_shape)
-    ipp = cine_geom.ipp.reshape(3)
-    iop = cine_geom.iop.reshape(6)
-    col_dir = iop[0:3]
-    row_dir = iop[3:6]
-    ps_row, ps_col = cine_geom.ps.reshape(2)
+    ipp, row_dir, col_dir, ps_row, ps_col = _cine_geom_components(cine_geom)
     geom = DICOMGeometry2D(ipp=ipp, row_cos=row_dir, col_cos=col_dir, ps_row=ps_row, ps_col=ps_col)
     rr = line_xy[:, 1]
     cc = line_xy[:, 0]
@@ -178,9 +193,7 @@ def cine_line_to_patient_xyz(
 
 
 def cine_plane_normal(cine_geom: CineGeom) -> np.ndarray:
-    iop = cine_geom.iop.reshape(6)
-    col_dir = iop[0:3]
-    row_dir = iop[3:6]
+    _, row_dir, col_dir, _, _ = _cine_geom_components(cine_geom)
     n = np.cross(col_dir, row_dir)
     nn = np.linalg.norm(n)
     return n / (nn if nn > 0 else 1e-12)
@@ -224,7 +237,7 @@ def make_plane_from_cine_line(
 
 
 def auto_fov_from_line(line_xy: np.ndarray, cine_geom: CineGeom) -> float:
-    ps_row, ps_col = cine_geom.ps.reshape(2)
+    _, _, _, ps_row, ps_col = _cine_geom_components(cine_geom)
     dx = (line_xy[-1, 0] - line_xy[0, 0]) * ps_col
     dy = (line_xy[-1, 1] - line_xy[0, 1]) * ps_row
     length = float(np.hypot(dx, dy))
