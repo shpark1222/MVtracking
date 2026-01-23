@@ -116,11 +116,11 @@ def estimate_volume_geom(folder):
     ps    = np.array(ds0.PixelSpacing, float)
     
     # DICOM convention
-    col = _unit(iop[0:3])   # +j direction
-    row = _unit(iop[3:6])   # +i direction
+    col = _unit(iop[0:3])   # +i
+    row = _unit(iop[3:6])   # +j
     
     # match geometry.py per-slice branch: slc_dir = cross(row_dir, col_dir)
-    slc = np.cross(row, col)
+    slc = np.cross(col, row)
     nslc = np.linalg.norm(slc)
     slc = slc / nslc if nslc > 1e-6 else np.array([0.0, 0.0, 1.0])
     
