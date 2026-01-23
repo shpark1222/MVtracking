@@ -260,13 +260,53 @@ def reslice_plane_fixedN(
 
     XYZ = c.reshape(3, 1) + u.reshape(3, 1) * U.reshape(1, -1) + v.reshape(3, 1) * V.reshape(1, -1)
 
-    A = vol_geom.A
-    orgn4 = vol_geom.orgn4.reshape(3, 1)
-    abc = np.linalg.solve(A, (XYZ - orgn4))
+    if vol_geom.ipps is not None and vol_geom.slice_positions is not None:
+        print("[mvtracking] using per-slice IPP/IOP mapping")
+        iop = vol_geom.iop
+        if iop is None:
+            raise RuntimeError("vol_geom.iop is required for per-slice mapping")
+        ps = vol_geom.pixel_spacing
+        if ps is None:
+            raise RuntimeError("vol_geom.pixel_spacing is required for per-slice mapping")
+        ipps = vol_geom.ipps
+        slice_positions = vol_geom.slice_positions
 
-    colq = (abc[0, :]).reshape(Npix, Npix)
-    rowq = (abc[1, :]).reshape(Npix, Npix)
-    slcq = (abc[2, :]).reshape(Npix, Npix)
+        def _unit(vec: np.ndarray) -> np.ndarray:
+            n = np.linalg.norm(vec)
+            if n < 1e-8:
+                return vec * 0.0
+            return vec / n
+
+        col_dir = _unit(iop[0:3])
+        row_dir = _unit(iop[3:6])
+        slc_dir = _unit(np.cross(row_dir, col_dir))
+        if ipps.shape[0] >= 2:
+            d = ipps[-1] - ipps[0]
+            if np.dot(slc_dir, d) < 0:
+                slc_dir = -slc_dir
+
+        p = XYZ.T @ slc_dir
+        idx = np.searchsorted(slice_positions, p)
+        idx0 = np.clip(idx, 0, len(slice_positions) - 1)
+        idx1 = np.clip(idx - 1, 0, len(slice_positions) - 1)
+        use0 = np.abs(p - slice_positions[idx0]) <= np.abs(p - slice_positions[idx1])
+        k = np.where(use0, idx0, idx1)
+
+        ipp_k = ipps[k]
+        B = np.column_stack([col_dir * ps[1], row_dir * ps[0]])
+        uv = np.linalg.pinv(B) @ (XYZ - ipp_k.T)
+
+        colq = uv[0, :].reshape(Npix, Npix)
+        rowq = uv[1, :].reshape(Npix, Npix)
+        slcq = k.reshape(Npix, Npix)
+    else:
+        A = vol_geom.A
+        orgn4 = vol_geom.orgn4.reshape(3, 1)
+        abc = np.linalg.solve(A, (XYZ - orgn4))
+
+        colq = (abc[0, :]).reshape(Npix, Npix)
+        rowq = (abc[1, :]).reshape(Npix, Npix)
+        slcq = (abc[2, :]).reshape(Npix, Npix)
 
     coords = np.vstack([rowq.ravel(), colq.ravel(), slcq.ravel()])
 
