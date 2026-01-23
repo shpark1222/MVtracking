@@ -92,6 +92,11 @@ def estimate_volume_geom(folder):
         slc = slc / nslc
 
     ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos])
+    if ipps.shape[0] >= 2:
+        d = ipps[-1] - ipps[0]
+        if np.dot(slc, d) < 0:
+            slc = -slc
+
     proj = ipps @ slc
     diffs = np.diff(np.sort(proj))
     diffs = diffs[np.isfinite(diffs)]
@@ -121,6 +126,10 @@ def estimate_volume_geom(folder):
         "A": A,
         "PixelSpacing": ps,
         "sliceStep": np.array([dz]),
+        "IOP": iop,
+        "IPPs": ipps,
+        "slice_positions": proj,
+        "slice_order": np.argsort(proj),
         "axis_map": infer_axis_map_from_iop_ipp(iop, ipps),
     }
 
@@ -276,6 +285,10 @@ class PackBuilder(QtWidgets.QWidget):
             gg["A"] = geom["A"]
             gg["PixelSpacing"] = geom["PixelSpacing"]
             gg["sliceStep"] = geom["sliceStep"]
+            gg["IOP"] = geom["IOP"]
+            gg["IPPs"] = geom["IPPs"]
+            gg["slice_positions"] = geom["slice_positions"]
+            gg["slice_order"] = geom["slice_order"]
             gg.attrs["axis_map_json"] = json.dumps(_to_jsonable(geom["axis_map"]))
 
             gc = f.create_group("cine")
