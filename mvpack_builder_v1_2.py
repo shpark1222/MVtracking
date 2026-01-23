@@ -296,18 +296,24 @@ class PackBuilder(QtWidgets.QWidget):
 
         geom = estimate_volume_geom(self.dcm4d)
         edges = None
+        edges_from_mrstruct = False
         vox = None
         for meta in (vel_meta, mag_meta):
             if meta is None:
                 continue
             if edges is None and meta.get("edges") is not None:
                 edges = meta["edges"]
+                edges_from_mrstruct = True
             if vox is None and meta.get("vox") is not None:
                 vox = meta["vox"]
 
         if edges is not None:
             edges = np.asarray(edges, float)
             if edges.shape in {(4, 4), (3, 4)}:
+                if edges_from_mrstruct:
+                    # MATLAB mrStruct.edges store row/col due to transposed image
+                    # storage; swap to align with reslice_plane_fixedN() [col,row,slice].
+                    edges[:3, [0, 1]] = edges[:3, [1, 0]]
                 geom["A"] = edges[0:3, 0:3]
                 geom["orgn4"] = edges[0:3, 3]
             else:
