@@ -23,6 +23,7 @@ class VolGeom:
     axis_map: Optional[Dict[str, np.ndarray]] = None
     iop: Optional[np.ndarray] = None
     ipp0: Optional[np.ndarray] = None
+    ipps: Optional[np.ndarray] = None
     pixel_spacing: Optional[np.ndarray] = None
     slice_positions: Optional[np.ndarray] = None
     slice_order: Optional[np.ndarray] = None
@@ -185,7 +186,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 )
 
         if geom_slice_order is not None:
-            print("[mvtracking] slice_order found -> IGNORED")
+            print("[mvtracking] slice_order found -> stored for slice mapping")
 
         print(
             "[mvtracking] geom axis_map="
@@ -255,6 +256,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 axis_map=geom_axis_map,
                 iop=geom_iop,
                 ipp0=geom_ipp0,
+                ipps=geom_ipps,
                 pixel_spacing=geom_ps,
                 slice_positions=geom_slice_positions,
                 slice_order=geom_slice_order,
