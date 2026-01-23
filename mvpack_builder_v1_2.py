@@ -37,6 +37,33 @@ def infer_axis_map_from_iop_ipp(iop6, ipps=None):
     }
 
 
+def cine_edges_from_dicom(ds0) -> np.ndarray:
+    iop = np.array(ds0.ImageOrientationPatient, float)
+    ipp = np.array(ds0.ImagePositionPatient, float)
+    ps = np.array(ds0.PixelSpacing, float)
+    slice_step = float(getattr(ds0, "SliceThickness", 1.0) or 1.0)
+
+    X = iop[:3]
+    Y = iop[3:]
+
+    edges = np.eye(4, dtype=np.float64)
+    edges[:3, 0] = X * ps[1]
+    edges[:3, 1] = Y * ps[0]
+    edges[:3, 2] = np.cross(X, Y) * slice_step
+    edges[:3, 3] = ipp
+
+    t = np.array(
+        [
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    edges[:3, :3] = edges[:3, :3] @ t
+    return edges
+
+
 def _to_jsonable(x):
     if isinstance(x, np.ndarray):
         return x.tolist()
@@ -142,14 +169,16 @@ def estimate_volume_geom(folder):
 
 def read_cine(folder):
     infos = read_dicom_sorted(folder)
-    frames = [pydicom.dcmread(p, force=True).pixel_array for _, p, _ in infos]
-    cine = np.stack(frames, axis=0)  # (Nt, Ny, Nx)
+    frames = [pydicom.dcmread(p, force=True).pixel_array.T for _, p, _ in infos]
+    cine = np.stack(frames, axis=0)
+    cine = np.transpose(cine, (1, 2, 0))  # (Ny, Nx, Nt)
 
     ds0 = infos[0][2]
     meta = {
         "IPP": np.array(ds0.ImagePositionPatient, float),
         "IOP": np.array(ds0.ImageOrientationPatient, float),
         "PixelSpacing": np.array(ds0.PixelSpacing, float),
+        "edges": cine_edges_from_dicom(ds0),
         "axis_map": infer_axis_map_from_iop_ipp(
             np.array(ds0.ImageOrientationPatient, float)
         ),
@@ -337,6 +366,7 @@ class PackBuilder(QtWidgets.QWidget):
                 gt["IPP"] = meta["IPP"]
                 gt["IOP"] = meta["IOP"]
                 gt["PixelSpacing"] = meta["PixelSpacing"]
+                gt["edges"] = meta["edges"]
                 gt.attrs["axis_map_json"] = json.dumps(_to_jsonable(meta["axis_map"]))
                 self.log(f"cine saved: {tag}")
 

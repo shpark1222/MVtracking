@@ -35,8 +35,6 @@ def save_tracking_state_h5(
     cine_auto_once: bool,
     pcmra_levels: tuple,
     pcmra_auto_once: bool,
-    cine_flip: tuple,
-    cine_swap: str,
     segment_payload: Optional[dict] = None,
     segment_count: Optional[int] = None,
     plot_segments: Optional[bool] = None,
@@ -87,8 +85,6 @@ def save_tracking_state_h5(
         g.attrs["cine_auto_once"] = int(bool(cine_auto_once))
         g.attrs["pcmra_levels_json"] = json.dumps(pcmra_levels)
         g.attrs["pcmra_auto_once"] = int(bool(pcmra_auto_once))
-        g.attrs["cine_flip_json"] = json.dumps(cine_flip)
-        g.attrs["cine_swap"] = str(cine_swap)
         if segment_payload is not None:
             g.attrs["segment_payload_json"] = json.dumps(segment_payload)
         if segment_count is not None:
@@ -134,8 +130,6 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         cine_auto_once = 1
         pcmra_levels = "[null, null]"
         pcmra_auto_once = 1
-        cine_flip = "[false, false, false]"
-        cine_swap = "X Y Z"
         segment_payload = "{}"
         segment_count = 6
         plot_segments = 0
@@ -191,8 +185,6 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             cine_auto_once = f["/state"].attrs.get("cine_auto_once", cine_auto_once)
             pcmra_levels = f["/state"].attrs.get("pcmra_levels_json", pcmra_levels)
             pcmra_auto_once = f["/state"].attrs.get("pcmra_auto_once", pcmra_auto_once)
-            cine_flip = f["/state"].attrs.get("cine_flip_json", cine_flip)
-            cine_swap = f["/state"].attrs.get("cine_swap", cine_swap)
             segment_payload = f["/state"].attrs.get("segment_payload_json", segment_payload)
             segment_count = f["/state"].attrs.get("segment_count", segment_count)
             plot_segments = f["/state"].attrs.get("plot_segments", plot_segments)
@@ -288,8 +280,6 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "cine_auto_once": int(cine_auto_once),
             "pcmra_levels_json": pcmra_levels,
             "pcmra_auto_once": int(pcmra_auto_once),
-            "cine_flip_json": cine_flip,
-            "cine_swap": str(cine_swap),
             "segment_payload_json": segment_payload,
             "segment_count": int(segment_count),
             "plot_segments": int(plot_segments),
