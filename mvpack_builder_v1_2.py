@@ -52,7 +52,13 @@ def _to_jsonable(x):
 def load_mrstruct(path):
     md = loadmat(path, squeeze_me=True, struct_as_record=False)
     ms = md["mrStruct"]
-    return np.array(ms.dataAy), None
+    edges = getattr(ms, "edges", None)
+    vox = getattr(ms, "vox", None)
+    meta = {
+        "edges": np.array(edges) if edges is not None else None,
+        "vox": np.array(vox) if vox is not None else None,
+    }
+    return np.array(ms.dataAy), meta
 
 
 def read_dicom_sorted(folder):
@@ -256,10 +262,40 @@ class PackBuilder(QtWidgets.QWidget):
         self.log(f"4D DICOM: {self.dcm4d}")
         self.log(f"cine count: {len(self.cines)}")
 
-        mag, _ = load_mrstruct(os.path.join(self.mr, "mag_struct.mat"))
-        vel, _ = load_mrstruct(os.path.join(self.mr, "vel_struct.mat"))
+        mag, mag_meta = load_mrstruct(os.path.join(self.mr, "mag_struct.mat"))
+        vel, vel_meta = load_mrstruct(os.path.join(self.mr, "vel_struct.mat"))
 
         geom = estimate_volume_geom(self.dcm4d)
+        edges = None
+        vox = None
+        for meta in (vel_meta, mag_meta):
+            if meta is None:
+                continue
+            if edges is None and meta.get("edges") is not None:
+                edges = meta["edges"]
+            if vox is None and meta.get("vox") is not None:
+                vox = meta["vox"]
+
+        if edges is not None:
+            edges = np.asarray(edges, float)
+            if edges.shape in {(4, 4), (3, 4)}:
+                geom["A"] = edges[0:3, 0:3]
+                geom["orgn4"] = edges[0:3, 3]
+            else:
+                self.log(f"[warn] Unexpected edges shape: {edges.shape}, using DICOM geometry.")
+                edges = None
+        else:
+            self.log("[warn] mrStruct edges missing; using DICOM geometry.")
+
+        if vox is not None:
+            vox = np.asarray(vox, float).reshape(-1)
+            if vox.size >= 2:
+                geom["PixelSpacing"] = vox[:2]
+            if vox.size >= 3:
+                geom["sliceStep"] = np.array([vox[2]])
+
+        if edges is not None:
+            geom["edges"] = edges
         ke = compute_ke(vel)
         vort, vortmag = compute_vorticity(
             vel,
@@ -283,6 +319,8 @@ class PackBuilder(QtWidgets.QWidget):
             gg = f.create_group("geom")
             gg["orgn4"] = geom["orgn4"]
             gg["A"] = geom["A"]
+            if "edges" in geom:
+                gg["edges"] = geom["edges"]
             gg["PixelSpacing"] = geom["PixelSpacing"]
             gg["sliceStep"] = geom["sliceStep"]
             gg["IOP"] = geom["IOP"]
