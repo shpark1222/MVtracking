@@ -21,12 +21,11 @@ def _unit(v):
 
 
 def infer_axis_map_from_iop_ipp(iop6, ipps=None):
-    # DICOM convention
-    # iop6[:3] = direction of increasing column index (+j)
-    # iop6[3:] = direction of increasing row index (+i)
+    # geometry.py convention:
+    # iop6[:3] = col_dir (+j), iop6[3:] = row_dir (+i)
     col = _unit(iop6[:3])
     row = _unit(iop6[3:])
-    slc = _unit(np.cross(row, col))  # match geometry.py per-slice branch
+    slc = _unit(np.cross(col, row))
 
     if ipps is not None and len(ipps) >= 2:
         d = ipps[-1] - ipps[0]
@@ -40,27 +39,10 @@ def infer_axis_map_from_iop_ipp(iop6, ipps=None):
     }
 
 
-def cine_edges_from_dicom(ds0) -> np.ndarray:
-    """
-    cine는 pixel_array.T 로 저장하는 전제를 유지함.
-    그래서 edges도 X/Y swap을 적용해서 "저장된 배열 좌표"와 맞춘다.
-    """
-    iop = np.array(ds0.ImageOrientationPatient, float)
-    ipp = np.array(ds0.ImagePositionPatient, float)
-    ps = np.array(ds0.PixelSpacing, float)
-    slice_step = float(getattr(ds0, "SliceThickness", 1.0) or 1.0)
-
-    X = _unit(iop[:3])   # +j
-    Y = _unit(iop[3:])   # +i
-
-    edges = np.eye(4, dtype=np.float64)
-    edges[:3, 0] = X * ps[1]
-    edges[:3, 1] = Y * ps[0]
-    edges[:3, 2] = np.cross(Y, X) * slice_step  # keep RH after swap
-    edges[:3, 3] = ipp
-
-    # swap X <-> Y to match pixel_array.T storage
-    t = np.array(
+def _swap_mat_t():
+    # swap col/row to match transposed storage convention
+    # same as your cine_edges_from_dicom()
+    return np.array(
         [
             [0.0, 1.0, 0.0],
             [1.0, 0.0, 0.0],
@@ -68,7 +50,67 @@ def cine_edges_from_dicom(ds0) -> np.ndarray:
         ],
         dtype=np.float64,
     )
-    edges[:3, :3] = edges[:3, :3] @ t
+
+
+def cine_edges_from_dicom(ds0) -> np.ndarray:
+    iop = np.array(ds0.ImageOrientationPatient, float)  # [col_dir(3), row_dir(3)]
+    ipp = np.array(ds0.ImagePositionPatient, float)
+    ps = np.array(ds0.PixelSpacing, float)              # [row_spacing, col_spacing]
+    slice_step = float(getattr(ds0, "SliceThickness", 1.0) or 1.0)
+
+    col_dir = _unit(iop[:3])
+    row_dir = _unit(iop[3:])
+    slc_dir = _unit(np.cross(col_dir, row_dir))
+
+    edges = np.eye(4, dtype=np.float64)
+    edges[:3, 0] = col_dir * ps[1]       # col step
+    edges[:3, 1] = row_dir * ps[0]       # row step
+    edges[:3, 2] = slc_dir * slice_step  # slice step (cine는 의미 약함)
+    edges[:3, 3] = ipp
+
+    # transpose 저장 기준으로 맞춤
+    edges[:3, :3] = edges[:3, :3] @ _swap_mat_t()
+    return edges
+
+
+def volume_edges_from_dicom_series(infos) -> np.ndarray:
+    """
+    4D DICOM series로부터 volume edges를 만든다.
+    중요한 점: cine와 동일하게 "transpose 저장 기준" edges가 되도록 마지막에 swap(t) 적용.
+    """
+    ds0 = infos[0][2]
+    iop = np.array(ds0.ImageOrientationPatient, float)  # [col_dir, row_dir]
+    ipp0 = np.array(ds0.ImagePositionPatient, float)
+    ps = np.array(ds0.PixelSpacing, float)
+
+    col_dir = _unit(iop[:3])    # +j
+    row_dir = _unit(iop[3:])    # +i
+
+    ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos], dtype=np.float64)
+
+    # slice direction + spacing
+    slc_dir = _unit(np.cross(col_dir, row_dir))
+
+    if len(ipps) >= 2:
+        d = ipps[-1] - ipps[0]
+        if np.dot(slc_dir, d) < 0:
+            slc_dir = -slc_dir
+
+    proj = ipps @ slc_dir
+    diffs = np.diff(np.sort(proj))
+    diffs = diffs[np.isfinite(diffs)]
+    diffs = diffs[np.abs(diffs) > 1e-6]
+    dz = float(np.median(diffs)) if diffs.size else float(ps[0])
+    dz = max(dz, 1e-3)
+
+    edges = np.eye(4, dtype=np.float64)
+    edges[:3, 0] = col_dir * ps[1]
+    edges[:3, 1] = row_dir * ps[0]
+    edges[:3, 2] = slc_dir * dz
+    edges[:3, 3] = ipp0
+
+    # transpose 저장 기준으로 맞춤 (중요)
+    edges[:3, :3] = edges[:3, :3] @ _swap_mat_t()
     return edges
 
 
@@ -114,64 +156,51 @@ def read_dicom_sorted(folder):
 
 
 def estimate_volume_geom(folder):
-    """
-    DICOM에서 4D volume geometry 추정.
-    규칙은 딱 하나로 통일:
-      col_dir = iop[:3] (+j)
-      row_dir = iop[3:] (+i)
-      slc_dir = cross(row_dir, col_dir)
-      dz는 IPP들을 slc_dir로 projection해서 median spacing
-      A = [col_dir*ps[1], row_dir*ps[0], slc_dir*dz]
-    """
     infos = read_dicom_sorted(folder)
     if not infos:
-        raise RuntimeError(f"No DICOM files found under: {folder}")
+        raise RuntimeError(f"No DICOM found under: {folder}")
 
     ds0 = infos[0][2]
-
-    orgn4 = np.array(ds0.ImagePositionPatient, float)
-    iop = np.array(ds0.ImageOrientationPatient, float).reshape(6)
-    ps = np.array(ds0.PixelSpacing, float).reshape(2)
-
-    col_dir = _unit(iop[:3])   # +j direction
-    row_dir = _unit(iop[3:])   # +i direction
-
-    slc_dir = np.cross(row_dir, col_dir)
-    nslc = np.linalg.norm(slc_dir)
-    slc_dir = slc_dir / (nslc if nslc > 1e-6 else 1.0)
+    iop = np.array(ds0.ImageOrientationPatient, float)
+    ps = np.array(ds0.PixelSpacing, float)
 
     ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos], dtype=np.float64)
 
+    # "transpose 저장 기준" edges
+    edges = volume_edges_from_dicom_series(infos)
+
+    # A/orgn4는 edges에서 파생
+    A = edges[:3, :3].copy()
+    orgn4 = edges[:3, 3].copy()
+
+    # slice 관련도 저장 (axis_map은 DICOM 기준이지만 여기선 참고용)
+    col_dir = _unit(iop[:3])
+    row_dir = _unit(iop[3:])
+    slc_dir = _unit(np.cross(col_dir, row_dir))
+    if len(ipps) >= 2:
+        d = ipps[-1] - ipps[0]
+        if np.dot(slc_dir, d) < 0:
+            slc_dir = -slc_dir
     proj = ipps @ slc_dir
-    sp = np.sort(proj)
-    diffs = np.diff(sp)
+    diffs = np.diff(np.sort(proj))
     diffs = diffs[np.isfinite(diffs)]
     diffs = diffs[np.abs(diffs) > 1e-6]
-
-    if diffs.size:
-        dz = float(np.median(diffs))
-    else:
-        dz = float(getattr(ds0, "SpacingBetweenSlices", None) or getattr(ds0, "SliceThickness", None) or ps[0])
+    dz = float(np.median(diffs)) if diffs.size else float(ps[0])
     dz = max(dz, 1e-3)
 
-    A = np.column_stack([
-        col_dir * ps[1],   # col step (+j)
-        row_dir * ps[0],   # row step (+i)
-        slc_dir * dz,      # slice step
-    ]).astype(np.float64)
-
     if np.linalg.matrix_rank(A) < 3:
-        raise RuntimeError("Invalid volume geometry: A is singular (check IOP / IPP / slice spacing)")
+        raise RuntimeError("Invalid volume geometry: A is singular (check IOP/IPP/spacing)")
 
     return {
-        "orgn4": orgn4.astype(np.float64),
+        "orgn4": orgn4,
         "A": A,
-        "PixelSpacing": ps.astype(np.float64),
-        "sliceStep": np.array([dz], dtype=np.float64),
-        "IOP": iop.astype(np.float64),
-        "IPPs": ipps.astype(np.float64),
-        "slice_positions": proj.astype(np.float64),
-        "slice_order": np.argsort(proj).astype(np.int32),
+        "edges": edges,
+        "PixelSpacing": ps,
+        "sliceStep": np.array([dz]),
+        "IOP": iop,
+        "IPPs": ipps,
+        "slice_positions": proj,
+        "slice_order": np.argsort(proj),
         "axis_map": infer_axis_map_from_iop_ipp(iop, ipps),
     }
 
@@ -179,11 +208,12 @@ def estimate_volume_geom(folder):
 def read_cine(folder):
     infos = read_dicom_sorted(folder)
     if not infos:
-        raise RuntimeError(f"No cine DICOM files found under: {folder}")
+        raise RuntimeError(f"No cine DICOM found under: {folder}")
 
+    # transpose 저장 기준 (pixel_array.T)
     frames = [pydicom.dcmread(p, force=True).pixel_array.T for _, p, _ in infos]
-    cine = np.stack(frames, axis=0)
-    cine = np.transpose(cine, (1, 2, 0))  # (Ny, Nx, Nt)
+    cine = np.stack(frames, axis=0)             # (Nt, Ny, Nx)
+    cine = np.transpose(cine, (1, 2, 0))        # (Ny, Nx, Nt)
 
     ds0 = infos[0][2]
     meta = {
@@ -193,7 +223,7 @@ def read_cine(folder):
         "edges": cine_edges_from_dicom(ds0),
         "axis_map": infer_axis_map_from_iop_ipp(np.array(ds0.ImageOrientationPatient, float)),
     }
-    return cine.astype(np.float32), meta
+    return cine, meta
 
 
 # ============================
@@ -273,7 +303,7 @@ class PackBuilder(QtWidgets.QWidget):
         self.btn_build.clicked.connect(self.build)
 
     def log(self, s):
-        self.logbox.appendPlainText(str(s))
+        self.logbox.appendPlainText(s)
 
     def sel_mr(self):
         d = QtWidgets.QFileDialog.getExistingDirectory(self)
@@ -292,7 +322,7 @@ class PackBuilder(QtWidgets.QWidget):
         if not d:
             return
         tag, ok = QtWidgets.QInputDialog.getText(self, "cine tag", "2CH / 3CH / 4CH")
-        if ok and tag:
+        if ok:
             self.cines.append((tag, d))
             self.lst_cine.addItem(f"{tag}: {d}")
 
@@ -302,54 +332,44 @@ class PackBuilder(QtWidgets.QWidget):
         self.log(f"4D DICOM: {self.dcm4d}")
         self.log(f"cine count: {len(self.cines)}")
 
-        if not self.mr or not self.dcm4d:
-            QtWidgets.QMessageBox.warning(self, "Missing input", "Select mrStruct folder and 4D DICOM folder first.")
-            return
-
         mag, mag_meta = load_mrstruct(os.path.join(self.mr, "mag_struct.mat"))
         vel, vel_meta = load_mrstruct(os.path.join(self.mr, "vel_struct.mat"))
 
         geom = estimate_volume_geom(self.dcm4d)
 
+        # prefer mrStruct edges if present
         edges = None
-        edges_from_mrstruct = False
         vox = None
         for meta in (vel_meta, mag_meta):
             if meta is None:
                 continue
             if edges is None and meta.get("edges") is not None:
                 edges = meta["edges"]
-                edges_from_mrstruct = True
             if vox is None and meta.get("vox") is not None:
                 vox = meta["vox"]
 
-        # If mrStruct edges exists, use it to override A/orgn4.
-        # But swap [0,1] because mrStruct dataAy is stored transposed.
         if edges is not None:
             edges = np.asarray(edges, float)
             if edges.shape == (3, 4):
                 edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
             if edges.shape == (4, 4):
-                if edges_from_mrstruct:
-                    edges[:3, [0, 1]] = edges[:3, [1, 0]]
-                geom["A"] = edges[0:3, 0:3].astype(np.float64)
-                geom["orgn4"] = edges[0:3, 3].astype(np.float64)
-                geom["edges"] = edges.astype(np.float64)
-                self.log("[geom] using mrStruct edges (with swap)")
+                # 중요: mrStruct.edges는 이미 transpose convention 포함된 경우가 많아서 여기서 swap 금지
+                geom["edges"] = edges
+                geom["A"] = edges[0:3, 0:3]
+                geom["orgn4"] = edges[0:3, 3]
+                self.log("[info] using mrStruct.edges for volume geometry (no extra swap).")
             else:
                 self.log(f"[warn] Unexpected mrStruct edges shape: {edges.shape}, using DICOM geometry.")
-                edges = None
         else:
-            self.log("[geom] mrStruct edges missing, using DICOM geometry.")
+            self.log("[warn] mrStruct edges missing; using DICOM-derived edges.")
 
-        # Optional override spacing from mrStruct.vox
+        # voxel spacing override if provided
         if vox is not None:
             vox = np.asarray(vox, float).reshape(-1)
             if vox.size >= 2:
-                geom["PixelSpacing"] = vox[:2].astype(np.float64)
+                geom["PixelSpacing"] = vox[:2]
             if vox.size >= 3:
-                geom["sliceStep"] = np.array([vox[2]], dtype=np.float64)
-            self.log(f"[geom] voxel spacing override from mrStruct.vox: {vox}")
+                geom["sliceStep"] = np.array([vox[2]])
 
         ke = compute_ke(vel)
         vort, vortmag = compute_vorticity(
@@ -373,10 +393,9 @@ class PackBuilder(QtWidgets.QWidget):
             g["vortmag"] = vortmag
 
             gg = f.create_group("geom")
+            gg["edges"] = geom["edges"]
             gg["orgn4"] = geom["orgn4"]
             gg["A"] = geom["A"]
-            if "edges" in geom:
-                gg["edges"] = geom["edges"]
             gg["PixelSpacing"] = geom["PixelSpacing"]
             gg["sliceStep"] = geom["sliceStep"]
             gg["IOP"] = geom["IOP"]
@@ -388,7 +407,7 @@ class PackBuilder(QtWidgets.QWidget):
             gc = f.create_group("cine")
             for tag, folder in self.cines:
                 cine, meta = read_cine(folder)
-                gt = gc.create_group(str(tag))
+                gt = gc.create_group(tag.lower())
                 gt["cineI"] = cine
                 gt["IPP"] = meta["IPP"]
                 gt["IOP"] = meta["IOP"]
@@ -397,7 +416,7 @@ class PackBuilder(QtWidgets.QWidget):
                 gt.attrs["axis_map_json"] = json.dumps(_to_jsonable(meta["axis_map"]))
                 self.log(f"cine saved: {tag}")
 
-        self.log(f"DONE: {out_path}")
+        self.log(f"DONE -> {out_path}")
         QtWidgets.QMessageBox.information(self, "Build Complete", "mvpack.h5 saved successfully.")
 
 
