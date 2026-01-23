@@ -115,29 +115,19 @@ def estimate_volume_geom(folder):
     iop   = np.array(ds0.ImageOrientationPatient, float)
     ps    = np.array(ds0.PixelSpacing, float)
     
-    # DICOM convention
-    col = _unit(iop[0:3])   # +i
-    row = _unit(iop[3:6])   # +j
+    # transpose 저장 기준의 축 정의(기존 코드와 일치)
+    row = _unit(iop[0:3])   # 화면/배열의 row 축(= DICOM의 first triplet)
+    col = _unit(iop[3:6])   # 화면/배열의 col 축(= DICOM의 second triplet)
     
-    # match geometry.py per-slice branch: slc_dir = cross(row_dir, col_dir)
-    slc = np.cross(col, row)
-    nslc = np.linalg.norm(slc)
-    slc = slc / nslc if nslc > 1e-6 else np.array([0.0, 0.0, 1.0])
+    slc = np.cross(row, col)
+    slc = slc / (np.linalg.norm(slc) if np.linalg.norm(slc) > 1e-6 else 1.0)
     
-    ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos])
-    proj = ipps @ slc
-    diffs = np.diff(np.sort(proj))
-    diffs = diffs[np.isfinite(diffs)]
-    diffs = diffs[np.abs(diffs) > 1e-6]
-    dz = float(np.median(diffs)) if diffs.size else float(ps[0])
-    dz = max(dz, 1e-3)
-    
+    # PixelSpacing은 [row_spacing, col_spacing]
     A = np.column_stack([
-        col * ps[1],   # col step
-        row * ps[0],   # row step
-        slc * dz,      # slice step
+        col * ps[1],   # x step
+        row * ps[0],   # y step
+        slc * dz,      # z step
     ])
-
 
     if np.linalg.matrix_rank(A) < 3:
         raise RuntimeError(
