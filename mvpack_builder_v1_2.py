@@ -109,44 +109,35 @@ def estimate_volume_geom(folder):
     infos = read_dicom_sorted(folder)
     ds0 = infos[0][2]
 
+    # mvpack_builder_v1_2.py  estimate_volume_geom()
+    
     orgn4 = np.array(ds0.ImagePositionPatient, float)
-    iop = np.array(ds0.ImageOrientationPatient, float)
-    ps = np.array(ds0.PixelSpacing, float)
-
-    row = _unit(iop[:3])
-    col = _unit(iop[3:])
-
+    iop   = np.array(ds0.ImageOrientationPatient, float)
+    ps    = np.array(ds0.PixelSpacing, float)
+    
+    # DICOM convention
+    col = _unit(iop[0:3])   # +j direction
+    row = _unit(iop[3:6])   # +i direction
+    
+    # match geometry.py per-slice branch: slc_dir = cross(row_dir, col_dir)
     slc = np.cross(row, col)
     nslc = np.linalg.norm(slc)
-
-    if nslc < 1e-6:
-        slc = np.array([0.0, 0.0, 1.0])
-    else:
-        slc = slc / nslc
-
+    slc = slc / nslc if nslc > 1e-6 else np.array([0.0, 0.0, 1.0])
+    
     ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos])
-    if ipps.shape[0] >= 2:
-        d = ipps[-1] - ipps[0]
-        if np.dot(slc, d) < 0:
-            slc = -slc
-
     proj = ipps @ slc
     diffs = np.diff(np.sort(proj))
     diffs = diffs[np.isfinite(diffs)]
     diffs = diffs[np.abs(diffs) > 1e-6]
-
-    if diffs.size == 0:
-        dz = float(ps[0])
-    else:
-        dz = float(np.median(diffs))
-
+    dz = float(np.median(diffs)) if diffs.size else float(ps[0])
     dz = max(dz, 1e-3)
-
+    
     A = np.column_stack([
-        col * ps[1],
-        row * ps[0],
-        slc * dz,
+        col * ps[1],   # col step
+        row * ps[0],   # row step
+        slc * dz,      # slice step
     ])
+
 
     if np.linalg.matrix_rank(A) < 3:
         raise RuntimeError(
