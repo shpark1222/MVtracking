@@ -72,22 +72,16 @@ def _edges_to_A_orgn4(edges: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _build_cine_edges(iop: np.ndarray, ipp: np.ndarray, ps: np.ndarray, slice_step: float) -> np.ndarray:
-    X = iop[:3]
-    Y = iop[3:]
+    # edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
+    X = iop[:3] / (np.linalg.norm(iop[:3]) if np.linalg.norm(iop[:3]) > 0 else 1.0)
+    Y = iop[3:] / (np.linalg.norm(iop[3:]) if np.linalg.norm(iop[3:]) > 0 else 1.0)
+    Z = np.cross(X, Y)
+    Z = Z / (np.linalg.norm(Z) if np.linalg.norm(Z) > 0 else 1.0)
     edges = np.eye(4, dtype=np.float64)
     edges[:3, 0] = X * ps[1]
     edges[:3, 1] = Y * ps[0]
-    edges[:3, 2] = np.cross(X, Y) * slice_step
+    edges[:3, 2] = Z * slice_step
     edges[:3, 3] = ipp
-    t = np.array(
-        [
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    edges[:3, :3] = edges[:3, :3] @ t
     return edges
 
 
@@ -101,8 +95,8 @@ def _sanity_check_cine_edges(label: str, cine_geom: CineGeom) -> None:
     if edges.shape != (4, 4):
         return
 
-    row_vec = edges[:3, 0]
-    col_vec = edges[:3, 1]
+    col_vec = edges[:3, 0]
+    row_vec = edges[:3, 1]
     row_n = np.linalg.norm(row_vec)
     col_n = np.linalg.norm(col_vec)
     if row_n < 1e-8 or col_n < 1e-8:
@@ -288,7 +282,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
             edges = _read_ds(f, base + "/edges").astype(np.float64) if base + "/edges" in f else None
             if edges is None:
                 edges = _build_cine_edges(iop, ipp, ps, 1.0)
-                print(f"[mvtracking] cine edges missing for {key}; using DICOM fallback with swap.")
+                print(f"[mvtracking] cine edges missing for {key}; using DICOM fallback.")
 
             group = f[base]
             cine_axis_map = _read_axis_map_json(group)

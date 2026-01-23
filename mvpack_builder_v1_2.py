@@ -39,44 +39,36 @@ def infer_axis_map_from_iop_ipp(iop6, ipps=None):
     }
 
 
-def _swap_mat_t():
-    # swap col/row to match transposed storage convention
-    # same as your cine_edges_from_dicom()
-    return np.array(
-        [
-            [0.0, 1.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=np.float64,
+def cine_edges_from_dicom(ds0) -> np.ndarray:
+    # edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
+    iop = np.array(ds0.ImageOrientationPatient, float)  # [X..., Y...]
+    ipp = np.array(ds0.ImagePositionPatient, float)
+    ps = np.array(ds0.PixelSpacing, float)              # [rowSpacing, colSpacing]
+    row_spacing = float(ps[0])
+    col_spacing = float(ps[1])
+
+    X = _unit(iop[:3])  # +j (col)
+    Y = _unit(iop[3:])  # +i (row)
+    Z = _unit(np.cross(X, Y))
+
+    slice_step = float(
+        getattr(ds0, "SpacingBetweenSlices", None)
+        or getattr(ds0, "SliceThickness", None)
+        or 1.0
     )
 
-
-def cine_edges_from_dicom(ds0) -> np.ndarray:
-    iop = np.array(ds0.ImageOrientationPatient, float)  # [col_dir(3), row_dir(3)]
-    ipp = np.array(ds0.ImagePositionPatient, float)
-    ps = np.array(ds0.PixelSpacing, float)              # [row_spacing, col_spacing]
-    slice_step = float(getattr(ds0, "SliceThickness", 1.0) or 1.0)
-
-    col_dir = _unit(iop[:3])
-    row_dir = _unit(iop[3:])
-    slc_dir = _unit(np.cross(col_dir, row_dir))
-
     edges = np.eye(4, dtype=np.float64)
-    edges[:3, 0] = col_dir * ps[1]       # col step
-    edges[:3, 1] = row_dir * ps[0]       # row step
-    edges[:3, 2] = slc_dir * slice_step  # slice step (cine는 의미 약함)
+    edges[:3, 0] = X * col_spacing
+    edges[:3, 1] = Y * row_spacing
+    edges[:3, 2] = Z * slice_step
     edges[:3, 3] = ipp
-
-    # transpose 저장 기준으로 맞춤
-    edges[:3, :3] = edges[:3, :3] @ _swap_mat_t()
     return edges
 
 
 def volume_edges_from_dicom_series(infos) -> np.ndarray:
     """
     4D DICOM series로부터 volume edges를 만든다.
-    중요한 점: cine와 동일하게 "transpose 저장 기준" edges가 되도록 마지막에 swap(t) 적용.
+    edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
     """
     ds0 = infos[0][2]
     iop = np.array(ds0.ImageOrientationPatient, float)  # [col_dir, row_dir]
@@ -108,9 +100,6 @@ def volume_edges_from_dicom_series(infos) -> np.ndarray:
     edges[:3, 1] = row_dir * ps[0]
     edges[:3, 2] = slc_dir * dz
     edges[:3, 3] = ipp0
-
-    # transpose 저장 기준으로 맞춤 (중요)
-    edges[:3, :3] = edges[:3, :3] @ _swap_mat_t()
     return edges
 
 
@@ -166,7 +155,7 @@ def estimate_volume_geom(folder):
 
     ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos], dtype=np.float64)
 
-    # "transpose 저장 기준" edges
+    # edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
     edges = volume_edges_from_dicom_series(infos)
 
     # A/orgn4는 edges에서 파생
@@ -205,22 +194,50 @@ def estimate_volume_geom(folder):
     }
 
 
-def read_cine(folder):
+def read_cine(folder, log_fn=None):
     infos = read_dicom_sorted(folder)
     if not infos:
         raise RuntimeError(f"No cine DICOM found under: {folder}")
 
-    # transpose 저장 기준 (pixel_array.T)
-    frames = [pydicom.dcmread(p, force=True).pixel_array.T for _, p, _ in infos]
+    frames = []
+    for _, p, ds in infos:
+        ds_full = pydicom.dcmread(p, force=True)
+        arr = ds_full.pixel_array
+        if arr.ndim == 2:
+            frames.append(arr)
+        elif arr.ndim == 3:
+            frames.extend(arr)
+        else:
+            raise RuntimeError(f"Unsupported cine pixel_array shape: {arr.shape}")
+
     cine = np.stack(frames, axis=0)             # (Nt, Ny, Nx)
     cine = np.transpose(cine, (1, 2, 0))        # (Ny, Nx, Nt)
 
     ds0 = infos[0][2]
+    edges = cine_edges_from_dicom(ds0)
+    if log_fn is not None:
+        iop = np.array(ds0.ImageOrientationPatient, float)
+        ipp = np.array(ds0.ImagePositionPatient, float)
+        ps = np.array(ds0.PixelSpacing, float)
+        X = _unit(iop[:3])
+        Y = _unit(iop[3:])
+        Z = _unit(np.cross(X, Y))
+        x_len = float(np.linalg.norm(edges[:3, 0]))
+        y_len = float(np.linalg.norm(edges[:3, 1]))
+        log_fn(f"[cine] IOP={iop}")
+        log_fn(f"[cine] IPP={ipp}")
+        log_fn(f"[cine] PixelSpacing={ps}")
+        log_fn(f"[cine] edges col_len={x_len:.4f} row_len={y_len:.4f}")
+        log_fn(
+            f"[cine] unit_check |X|={np.linalg.norm(X):.3f} "
+            f"|Y|={np.linalg.norm(Y):.3f} |Z|={np.linalg.norm(Z):.3f}"
+        )
+        log_fn(f"[cine] cross(X,Y)={Z}")
     meta = {
         "IPP": np.array(ds0.ImagePositionPatient, float),
         "IOP": np.array(ds0.ImageOrientationPatient, float),
         "PixelSpacing": np.array(ds0.PixelSpacing, float),
-        "edges": cine_edges_from_dicom(ds0),
+        "edges": edges,
         "axis_map": infer_axis_map_from_iop_ipp(np.array(ds0.ImageOrientationPatient, float)),
     }
     return cine, meta
@@ -353,11 +370,11 @@ class PackBuilder(QtWidgets.QWidget):
             if edges.shape == (3, 4):
                 edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
             if edges.shape == (4, 4):
-                # 중요: mrStruct.edges는 이미 transpose convention 포함된 경우가 많아서 여기서 swap 금지
+                # mrStruct.edges는 최상위 기준이다 (edges만 신뢰)
                 geom["edges"] = edges
                 geom["A"] = edges[0:3, 0:3]
                 geom["orgn4"] = edges[0:3, 3]
-                self.log("[info] using mrStruct.edges for volume geometry (no extra swap).")
+                self.log("[info] using mrStruct.edges for volume geometry.")
             else:
                 self.log(f"[warn] Unexpected mrStruct edges shape: {edges.shape}, using DICOM geometry.")
         else:
@@ -406,7 +423,7 @@ class PackBuilder(QtWidgets.QWidget):
 
             gc = f.create_group("cine")
             for tag, folder in self.cines:
-                cine, meta = read_cine(folder)
+                cine, meta = read_cine(folder, log_fn=self.log)
                 gt = gc.create_group(tag.lower())
                 gt["cineI"] = cine
                 gt["IPP"] = meta["IPP"]

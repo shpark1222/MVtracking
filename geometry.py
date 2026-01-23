@@ -77,12 +77,13 @@ def _cine_geom_components(cine_geom: CineGeom) -> Tuple[np.ndarray, np.ndarray, 
         edges = np.asarray(edges, dtype=np.float64)
         if edges.shape == (3, 4):
             edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
-        row_vec = edges[:3, 0]
-        col_vec = edges[:3, 1]
-        ps_row = float(np.linalg.norm(row_vec))
+        # edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
+        col_vec = edges[:3, 0]
+        row_vec = edges[:3, 1]
         ps_col = float(np.linalg.norm(col_vec))
-        row_dir = row_vec / (ps_row if ps_row > 0 else 1e-12)
+        ps_row = float(np.linalg.norm(row_vec))
         col_dir = col_vec / (ps_col if ps_col > 0 else 1e-12)
+        row_dir = row_vec / (ps_row if ps_row > 0 else 1e-12)
         ipp = edges[:3, 3].astype(np.float64)
         return ipp, row_dir, col_dir, ps_row, ps_col
 
@@ -246,6 +247,57 @@ def auto_fov_from_line(line_xy: np.ndarray, cine_geom: CineGeom) -> float:
     return float(np.clip(length * 3.0, 150.0, 1000.0))
 
 
+def reslice_cine_to_pcmra_grid(
+    pcmra_edges: np.ndarray,
+    pcmra_shape: Tuple[int, ...],
+    cine_img: np.ndarray,
+    cine_edges: np.ndarray,
+    z_tolerance: float = 0.5,
+    fill_value: float = 0.0,
+) -> np.ndarray:
+    """
+    Reslice cine into the PCMRA grid using edges only.
+    edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
+    """
+    pcmra_edges = np.asarray(pcmra_edges, dtype=np.float64)
+    cine_edges = np.asarray(cine_edges, dtype=np.float64)
+    if pcmra_edges.shape == (3, 4):
+        pcmra_edges = np.vstack([pcmra_edges, np.array([0.0, 0.0, 0.0, 1.0])])
+    if cine_edges.shape == (3, 4):
+        cine_edges = np.vstack([cine_edges, np.array([0.0, 0.0, 0.0, 1.0])])
+
+    if pcmra_edges.shape != (4, 4) or cine_edges.shape != (4, 4):
+        raise RuntimeError("pcmra_edges and cine_edges must be 4x4 (or 3x4)")
+
+    if cine_img.ndim == 3:
+        cine_img = cine_img.mean(axis=2)
+
+    Ny = int(pcmra_shape[0])
+    Nx = int(pcmra_shape[1])
+    Nz = int(pcmra_shape[2]) if len(pcmra_shape) > 2 else 1
+
+    idx = np.indices((Ny, Nx, Nz), dtype=np.float64)
+    row = idx[0].reshape(1, -1)
+    col = idx[1].reshape(1, -1)
+    slc = idx[2].reshape(1, -1)
+    hom = np.vstack([col, row, slc, np.ones_like(col)])
+
+    P = pcmra_edges @ hom
+    cine_vox = np.linalg.inv(cine_edges) @ P
+    x_cine = cine_vox[0, :]
+    y_cine = cine_vox[1, :]
+    z_cine = cine_vox[2, :]
+
+    coords = np.vstack([y_cine, x_cine])
+    sampled = map_coordinates(cine_img, coords, order=1, mode="constant", cval=fill_value)
+    if z_tolerance is not None:
+        mask = np.abs(z_cine) <= float(z_tolerance)
+        sampled = np.where(mask, sampled, fill_value)
+
+    out = sampled.reshape(Ny, Nx, Nz)
+    return out[:, :, 0] if Nz == 1 else out
+
+
 def reslice_plane_fixedN(
     pcmra3d: np.ndarray,
     vel5d: np.ndarray,
@@ -273,7 +325,19 @@ def reslice_plane_fixedN(
 
     XYZ = c.reshape(3, 1) + u.reshape(3, 1) * U.reshape(1, -1) + v.reshape(3, 1) * V.reshape(1, -1)
 
-    if vol_geom.ipps is not None and vol_geom.slice_positions is not None:
+    edges = vol_geom.edges
+    if edges is not None:
+        edges = np.asarray(edges, dtype=np.float64)
+        if edges.shape == (3, 4):
+            edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+        if edges.shape != (4, 4):
+            raise RuntimeError(f"Invalid volume edges shape: {edges.shape}")
+        hom = np.vstack([XYZ, np.ones((1, XYZ.shape[1]), dtype=np.float64)])
+        vox = np.linalg.inv(edges) @ hom
+        colq = vox[0, :].reshape(Npix, Npix)
+        rowq = vox[1, :].reshape(Npix, Npix)
+        slcq = vox[2, :].reshape(Npix, Npix)
+    elif vol_geom.ipps is not None and vol_geom.slice_positions is not None:
         print("[mvtracking] using per-slice IPP/IOP mapping")
         iop = vol_geom.iop
         if iop is None:
@@ -292,7 +356,7 @@ def reslice_plane_fixedN(
 
         col_dir = _unit(iop[0:3])
         row_dir = _unit(iop[3:6])
-        slc_dir = _unit(np.cross(row_dir, col_dir))
+        slc_dir = _unit(np.cross(col_dir, row_dir))
         if ipps.shape[0] >= 2:
             d = ipps[-1] - ipps[0]
             if np.dot(slc_dir, d) < 0:
