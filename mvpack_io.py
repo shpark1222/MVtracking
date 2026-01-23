@@ -2,7 +2,7 @@ import json
 import os
 import glob
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -83,22 +83,31 @@ def find_mvpack_in_folder(folder: str) -> str:
     raise FileNotFoundError(f"mvpack.h5 not found under: {folder}")
 
 
-def _coerce_cine_axes(img: np.ndarray, ny: int, nx: int) -> np.ndarray:
+def _coerce_cine_axes(
+    img: np.ndarray, ny: int, nx: int
+) -> Tuple[np.ndarray, Optional[Tuple[int, int, int]], bool]:
     if img.ndim != 3:
-        return img
+        return img, None, False
 
     shape = img.shape
     for t_axis in range(3):
         spatial_axes = [ax for ax in range(3) if ax != t_axis]
         if shape[spatial_axes[0]] == ny and shape[spatial_axes[1]] == nx:
-            return np.transpose(img, (spatial_axes[0], spatial_axes[1], t_axis)).copy()
+            axes = (spatial_axes[0], spatial_axes[1], t_axis)
+            if axes == (0, 1, 2):
+                return img, None, False
+            return np.transpose(img, axes).copy(), axes, False
         if shape[spatial_axes[0]] == nx and shape[spatial_axes[1]] == ny:
-            return np.transpose(img, (spatial_axes[1], spatial_axes[0], t_axis)).copy()
+            axes = (spatial_axes[1], spatial_axes[0], t_axis)
+            if axes == (0, 1, 2):
+                return img, None, False
+            return np.transpose(img, axes).copy(), axes, True
 
     if shape[0] < shape[1] and shape[0] < shape[2]:
-        return np.transpose(img, (1, 2, 0)).copy()
+        axes = (1, 2, 0)
+        return np.transpose(img, axes).copy(), axes, False
 
-    return img
+    return img, None, False
 
 
 def load_mvpack_h5(h5_path: str) -> MVPack:
@@ -225,8 +234,9 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 continue
 
             img = _read_ds(f, img_path)
+            spatial_swap = False
             if img.ndim == 3:
-                img = _coerce_cine_axes(img, pcmra.shape[0], pcmra.shape[1])
+                img, _, spatial_swap = _coerce_cine_axes(img, pcmra.shape[0], pcmra.shape[1])
             elif img.ndim == 2:
                 img = img[:, :, None]
             img = img.astype(np.float32)
@@ -234,6 +244,9 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
             ipp = _read_ds(f, ipp_path).reshape(3).astype(np.float64)
             iop = _read_ds(f, iop_path).reshape(6).astype(np.float64)
             ps = _read_ds(f, ps_path).reshape(2).astype(np.float64)
+            if spatial_swap:
+                iop = np.concatenate([iop[3:6], iop[0:3]])
+                ps = ps[::-1]
 
             group = f[base]
             cine_axis_map = _read_axis_map_json(group)
