@@ -12,6 +12,11 @@ from scipy.ndimage import map_coordinates
 _imageio_spec = importlib.util.find_spec("imageio.v2")
 imageio = importlib.import_module("imageio.v2") if _imageio_spec else None
 
+from pcmra_medsam2_refine import (
+    mask_to_polygon_points,
+    polygon_points_to_roi_state,
+    run_medsam2_subprocess,
+)
 from geometry import (
     reslice_plane_fixedN,
     cine_line_to_patient_xyz,
@@ -229,6 +234,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl_row.addWidget(self.btn_roi_copy)
         pcmra_ctrl_row.addWidget(self.btn_roi_paste)
         pcmra_ctrl_row.addWidget(self.btn_roi_forward)
+
+        self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (PCMRA, this phase)")
+        self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (PCMRA, all phases)")
+        pcmra_ctrl_row.addWidget(self.btn_refine_roi_phase)
+        pcmra_ctrl_row.addWidget(self.btn_refine_roi_all)
 
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
         self.btn_vel_gif = QtWidgets.QPushButton("Export Colormap GIF")
@@ -448,6 +458,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_copy.clicked.connect(self.copy_roi_state)
         self.btn_roi_paste.clicked.connect(self.paste_roi_state)
         self.btn_roi_forward.clicked.connect(self.copy_roi_forward)
+        self.btn_refine_roi_phase.clicked.connect(self.refine_roi_pcmra_phase)
+        self.btn_refine_roi_all.clicked.connect(self.refine_roi_pcmra_all_phases)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
@@ -2212,6 +2224,104 @@ class ValveTracker(QtWidgets.QMainWindow):
         abs_pts[:, 0] = np.clip(abs_pts[:, 0], 0, W - 1)
         abs_pts[:, 1] = np.clip(abs_pts[:, 1], 0, H - 1)
         return abs_pts
+
+    def _normalize_uint8(self, image: np.ndarray) -> np.ndarray:
+        if image.dtype == np.uint8:
+            return image
+        img = np.asarray(image, dtype=np.float64)
+        finite = np.isfinite(img)
+        if not finite.any():
+            return np.zeros(img.shape, dtype=np.uint8)
+        vmin = float(np.nanmin(img[finite]))
+        vmax = float(np.nanmax(img[finite]))
+        if vmax <= vmin:
+            return np.zeros(img.shape, dtype=np.uint8)
+        scaled = (img - vmin) / (vmax - vmin)
+        scaled = np.clip(scaled, 0.0, 1.0)
+        return (scaled * 255.0).round().astype(np.uint8)
+
+    def _prompt_from_roi_state(
+        self, state: dict, shape_hw: Tuple[int, int]
+    ) -> Tuple[Optional[List[float]], Optional[List[float]]]:
+        abs_pts = self._abs_pts_from_state_safe(state, shape_hw)
+        if abs_pts.ndim != 2 or abs_pts.shape[0] < 3:
+            return None, None
+        H, W = shape_hw
+        x = abs_pts[:, 0]
+        y = abs_pts[:, 1]
+        x1 = float(np.clip(np.min(x), 0, W - 1))
+        x2 = float(np.clip(np.max(x), 0, W - 1))
+        y1 = float(np.clip(np.min(y), 0, H - 1))
+        y2 = float(np.clip(np.max(y), 0, H - 1))
+        if x2 <= x1 or y2 <= y1:
+            return None, None
+        cx = float(np.clip(np.mean(x), 0, W - 1))
+        cy = float(np.clip(np.mean(y), 0, H - 1))
+        return [x1, y1, x2, y2], [cx, cy]
+
+    def _refine_pcmra_roi_for_phase(self, t: int) -> Optional[str]:
+        if t < 0 or t >= self.Nt:
+            return "Invalid phase index."
+        if self._is_roi_locked(t):
+            return "ROI is locked."
+
+        Ipcm, _, _, _, _ = self.reslice_for_phase(t)
+        img_u8 = self._normalize_uint8(Ipcm)
+        shape_hw = img_u8.shape[:2]
+
+        st = self.roi_state[t]
+        temp_state = st if st is not None else self.default_poly_roi_state(shape_hw)
+        box, point = self._prompt_from_roi_state(temp_state, shape_hw)
+        if box is None:
+            return "Failed to build ROI prompt."
+
+        self._begin_history_capture("roi", t)
+        try:
+            mask = run_medsam2_subprocess(img_u8, box, point)
+            pts = mask_to_polygon_points(mask)
+            if not pts:
+                raise RuntimeError("Empty contour from MedSAM2 mask.")
+            new_state = polygon_points_to_roi_state(pts, current_state=temp_state, shape_hw=shape_hw)
+            self.roi_state[t] = new_state
+            if t == int(self.slider.value()) - 1:
+                self.apply_roi_state_both(new_state)
+                self.update_spline_overlay(t)
+                self.compute_current(update_only=True)
+            self._commit_history_capture("roi", t)
+            return None
+        except Exception as exc:
+            self._history_active = None
+            return str(exc)
+
+    def refine_roi_pcmra_phase(self) -> None:
+        t = int(self.slider.value()) - 1
+        err = self._refine_pcmra_roi_for_phase(t)
+        if err is not None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", f"MedSAM2 refine failed:\n{err}")
+
+    def refine_roi_pcmra_all_phases(self) -> None:
+        progress = QtWidgets.QProgressDialog(
+            "Refining PCMRA ROI with MedSAM2...", "Cancel", 0, self.Nt, self
+        )
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        errors = []
+        for t in range(self.Nt):
+            progress.setValue(t)
+            QtWidgets.QApplication.processEvents()
+            if progress.wasCanceled():
+                break
+            err = self._refine_pcmra_roi_for_phase(t)
+            if err is not None and err != "ROI is locked.":
+                errors.append(f"Phase {t + 1}: {err}")
+
+        progress.setValue(self.Nt)
+        if errors:
+            msg = "Some phases failed to refine:\n" + "\n".join(errors[:10])
+            if len(errors) > 10:
+                msg += f"\n... and {len(errors) - 10} more."
+            QtWidgets.QMessageBox.warning(self, "MV tracker", msg)
 
     def _segment_flow_values(
         self,
