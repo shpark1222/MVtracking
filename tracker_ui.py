@@ -263,6 +263,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_refine_row.addWidget(self.btn_refine_roi_phase)
         pcmra_refine_row.addWidget(self.btn_refine_roi_all)
         pcmra_refine_row.addStretch(1)
+        self.pcmra_refine_widget = QtWidgets.QWidget()
+        self.pcmra_refine_widget.setLayout(pcmra_refine_row)
+        self._configure_pcmra_refine_widget()
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -630,6 +633,34 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._restored_state:
             self.compute_all()
             self.update_plot_for_selection()
+
+    def _configure_pcmra_refine_widget(self) -> None:
+        reason = None
+        try:
+            settings = get_medsam2_settings()
+        except Exception as exc:
+            settings = {}
+            reason = f"MedSAM2 settings failed to load: {exc}"
+
+        if reason is None:
+            missing = []
+            python_path = settings.get("python")
+            runner_path = settings.get("runner")
+            ckpt_path = settings.get("checkpoint")
+            if not python_path or not os.path.exists(str(python_path)):
+                missing.append("python not found")
+            if not runner_path or not os.path.exists(str(runner_path)):
+                missing.append("runner not found")
+            if not ckpt_path or not os.path.exists(str(ckpt_path)):
+                missing.append("checkpoint not found")
+            if missing:
+                reason = "MedSAM2 unavailable: " + ", ".join(missing)
+
+        if reason:
+            for widget in [self.chk_negative_points, self.btn_refine_roi_phase, self.btn_refine_roi_all]:
+                widget.setEnabled(False)
+                widget.setToolTip(reason)
+            self.pcmra_refine_widget.setToolTip(reason)
 
     # ============================
     # Restore state
