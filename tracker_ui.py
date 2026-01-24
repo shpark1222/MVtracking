@@ -233,6 +233,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_box.addWidget(self.pcmra_view, stretch=1)
 
         pcmra_ctrl_row = QtWidgets.QHBoxLayout()
+        pcmra_ctrl_row.setContentsMargins(0, 0, 0, 0)
+        pcmra_ctrl_row.setSpacing(6)
         self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
         self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
         self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
@@ -260,6 +262,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
         pcmra_refine_row = QtWidgets.QHBoxLayout()
         pcmra_refine_row.setContentsMargins(0, 0, 0, 0)
+        pcmra_refine_row.setSpacing(6)
         pcmra_refine_row.addWidget(self.chk_negative_points)
         pcmra_refine_row.addWidget(self.btn_refine_roi_phase)
         pcmra_refine_row.addWidget(self.btn_refine_roi_all)
@@ -345,6 +348,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         right_splitter.setStretchFactor(1, 1)
 
         right_box = QtWidgets.QVBoxLayout()
+        right_box.setContentsMargins(0, 0, 0, 0)
+        right_box.setSpacing(4)
         right_box.addWidget(right_splitter)
         right_box.addLayout(pcmra_ctrl_row)
         right_box.addWidget(self.pcmra_refine_widget, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
