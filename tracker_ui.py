@@ -238,8 +238,9 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (PCMRA, this phase)")
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (PCMRA, all phases)")
-        pcmra_ctrl_row.addWidget(self.btn_refine_roi_phase)
-        pcmra_ctrl_row.addWidget(self.btn_refine_roi_all)
+        pcmra_refine_row = QtWidgets.QHBoxLayout()
+        pcmra_refine_row.addWidget(self.btn_refine_roi_phase)
+        pcmra_refine_row.addWidget(self.btn_refine_roi_all)
 
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
         self.btn_vel_gif = QtWidgets.QPushButton("Export Colormap GIF")
@@ -254,6 +255,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl_row.addWidget(self.chk_segment_labels)
         pcmra_ctrl_row.addWidget(self.btn_brush)
         pcmra_ctrl_row.addStretch(1)
+
+        pcmra_box.addLayout(pcmra_ctrl_row)
+        pcmra_box.addLayout(pcmra_refine_row)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -333,7 +337,6 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         right_box = QtWidgets.QVBoxLayout()
         right_box.addWidget(right_splitter)
-        right_box.addLayout(pcmra_ctrl_row)
         right_widget = QtWidgets.QWidget()
         right_widget.setLayout(right_box)
 
