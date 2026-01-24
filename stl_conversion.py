@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Optional, Sequence
 
 import numpy as np
 from scipy.ndimage import binary_closing, binary_fill_holes
@@ -209,6 +209,51 @@ def write_ascii_stl(
             f.write("    endloop\n")
             f.write("  endfacet\n")
         f.write("endsolid mvtrack\n")
+
+
+def _normalize_triangles(
+    triangles: Optional[Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]],
+) -> Optional[Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]]:
+    if triangles is None:
+        return None
+    if isinstance(triangles, np.ndarray):
+        arr = np.asarray(triangles, dtype=np.float64)
+        if arr.ndim != 3 or arr.shape[1:] != (3, 3):
+            raise ValueError("triangles array must have shape (N, 3, 3)")
+        return [(arr[i, 0], arr[i, 1], arr[i, 2]) for i in range(arr.shape[0])]
+    return triangles
+
+
+def _triangulate_contour_fan(contour_pts_xyz: np.ndarray) -> Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    contour = np.asarray(contour_pts_xyz, dtype=np.float64)
+    if contour.ndim != 2 or contour.shape[0] < 3 or contour.shape[1] != 3:
+        raise ValueError("contour_pts_xyz must be (N, 3) with N >= 3")
+    if np.allclose(contour[0], contour[-1]):
+        contour = contour[:-1]
+    if contour.shape[0] < 3:
+        raise ValueError("contour_pts_xyz must include at least 3 unique points")
+    center = contour.mean(axis=0)
+    triangles = []
+    for idx in range(contour.shape[0]):
+        p0 = contour[idx]
+        p1 = contour[(idx + 1) % contour.shape[0]]
+        triangles.append((center, p0, p1))
+    return triangles
+
+
+def write_stl_from_patient_contour(
+    out_path: str,
+    contour_pts_xyz: Optional[np.ndarray],
+    output_space: str = "LPS",
+    triangles: Optional[Iterable[Tuple[np.ndarray, np.ndarray, np.ndarray]]] = None,
+):
+    """Write an STL from patient-space contour points (assumed LPS) or precomputed triangles."""
+    triangles_norm = _normalize_triangles(triangles)
+    if triangles_norm is None:
+        if contour_pts_xyz is None:
+            raise ValueError("contour_pts_xyz is required when triangles are not provided")
+        triangles_norm = _triangulate_contour_fan(np.asarray(contour_pts_xyz, dtype=np.float64))
+    write_ascii_stl(out_path, triangles_norm, output_space=output_space)
 
 
 def convert_plane_to_stl(
