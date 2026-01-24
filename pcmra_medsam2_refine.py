@@ -16,6 +16,7 @@ MEDSAM2_RUNNER = r"C:\Users\show2\MedSAM2\medsam2_infer.py"
 MEDSAM2_CKPT = r"C:\Users\show2\MedSAM2\checkpoints\MedSAM2_latest.pt"
 MEDSAM2_CONFIG = "configs/sam2.1_hiera_t512.yaml"
 MEDSAM2_DEVICE = "cpu"
+DEFAULT_CONTOUR_POINTS = 10
 
 DEFAULT_SETTINGS = {
     "python": MEDSAM2_PY,
@@ -26,6 +27,7 @@ DEFAULT_SETTINGS = {
     "debug_dir": "",
     "debug_keep": False,
     "force_512": True,
+    "contour_points": DEFAULT_CONTOUR_POINTS,
 }
 
 SETTINGS_ENV_MAP = {
@@ -420,7 +422,7 @@ def _sample_contour_points(pts_xy: np.ndarray, n_points: int) -> np.ndarray:
     return pts[idx].astype(np.float64)
 
 
-def mask_to_polygon_points(mask: np.ndarray) -> List[List[float]]:
+def mask_to_polygon_points(mask: np.ndarray, n_points: int = DEFAULT_CONTOUR_POINTS) -> List[List[float]]:
     import cv2
 
     mask_u8 = (mask > 0).astype(np.uint8)
@@ -477,7 +479,7 @@ def mask_to_polygon_points(mask: np.ndarray) -> List[List[float]]:
         return []
 
     contour = contour.reshape(-1, 2).astype(np.float64)
-    contour = _sample_contour_points(contour, n_points=10)
+    contour = _sample_contour_points(contour, n_points=n_points)
     return contour.astype(np.float64).tolist()
 
 

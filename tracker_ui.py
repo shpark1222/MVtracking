@@ -2289,7 +2289,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._begin_history_capture("roi", t)
         try:
             mask = run_medsam2_subprocess(img_u8, box, point)
-            pts = mask_to_polygon_points(mask)
+            settings = get_medsam2_settings()
+            n_points = int(settings.get("contour_points", 10))
+            pts = mask_to_polygon_points(mask, n_points=n_points)
             if not pts:
                 raise RuntimeError("Empty contour from MedSAM2 mask.")
             new_state = polygon_points_to_roi_state(pts, current_state=temp_state, shape_hw=shape_hw)
