@@ -258,12 +258,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
         pcmra_refine_row = QtWidgets.QHBoxLayout()
+        pcmra_refine_row.setContentsMargins(0, 0, 0, 0)
         pcmra_refine_row.addWidget(self.chk_negative_points)
         pcmra_refine_row.addWidget(self.btn_refine_roi_phase)
         pcmra_refine_row.addWidget(self.btn_refine_roi_all)
         pcmra_refine_row.addStretch(1)
-        self.pcmra_refine_widget = QtWidgets.QWidget()
-        self.pcmra_refine_widget.setLayout(pcmra_refine_row)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -2704,16 +2703,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         xs = [pt[0] for pt in pts]
         ys = [pt[1] for pt in pts]
         self._negative_point_marker.setData(xs, ys)
-
-    def _shrink_refine_options_width(self) -> None:
-        if not hasattr(self, "pcmra_refine_widget") or self.pcmra_refine_widget is None:
-            return
-        current_width = self.pcmra_refine_widget.width()
-        if current_width <= 0:
-            current_width = self.pcmra_refine_widget.sizeHint().width()
-        target_width = int(current_width * 0.7)
-        min_width = self.pcmra_refine_widget.minimumSizeHint().width()
-        self.pcmra_refine_widget.setMaximumWidth(max(target_width, min_width))
 
     def _on_fps_changed(self, value: float):
         self.play_fps = float(value)
