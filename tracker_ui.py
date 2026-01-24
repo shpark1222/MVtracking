@@ -87,6 +87,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._view_ranges = {"pcmra": None, "vel": None}
         self._restoring_view = False
         self._updating_image = False
+        self._syncing_view = False
         self._roi_clipboard = None
         self._line_clipboard = None
         self._line_angle_clipboard = None
@@ -124,8 +125,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(8)
-        layout.setRowStretch(0, 3)
-        layout.setRowStretch(1, 3)
+        layout.setRowStretch(0, 4)
+        layout.setRowStretch(1, 1)
         layout.setRowStretch(2, 0)
         layout.setColumnStretch(0, 1)
 
@@ -2735,6 +2736,27 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_negative_point_overlay(t)
         self.memo.appendPlainText(f"Added negative point at ({x:.1f}, {y:.1f}).")
 
+    def _remove_negative_point(
+        self, point_xy: np.ndarray, shape_hw: Tuple[int, int], radius: float = 6.0
+    ) -> bool:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return False
+        pts = self._negative_points[t]
+        if not pts:
+            return False
+        x = float(np.clip(point_xy[0], 0, shape_hw[1] - 1))
+        y = float(np.clip(point_xy[1], 0, shape_hw[0] - 1))
+        pts_arr = np.array(pts, dtype=np.float64)
+        dists = np.linalg.norm(pts_arr - np.array([x, y], dtype=np.float64)[None, :], axis=1)
+        idx = int(np.argmin(dists))
+        if dists[idx] > radius:
+            return False
+        removed = pts.pop(idx)
+        self._update_negative_point_overlay(t)
+        self.memo.appendPlainText(f"Removed negative point at ({removed[0]:.1f}, {removed[1]:.1f}).")
+        return True
+
     def _update_negative_point_overlay(self, t: int) -> None:
         if not hasattr(self, "_negative_point_marker") or self._negative_point_marker is None:
             return
@@ -2894,6 +2916,25 @@ class ValveTracker(QtWidgets.QMainWindow):
                     self._add_negative_point(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
                 event.accept()
                 return True
+            if (
+                view == self.pcmra_view.getView()
+                and self._negative_point_mode
+                and not self.brush_mode
+                and event.button() == QtCore.Qt.MouseButton.RightButton
+            ):
+                img_item = self.pcmra_view.getImageItem()
+                if img_item is None or img_item.image is None:
+                    return True
+                if hasattr(event, "scenePos"):
+                    pos = view.mapSceneToView(event.scenePos())
+                else:
+                    scene_pos = view.mapToScene(event.pos())
+                    pos = view.mapSceneToView(scene_pos)
+                shape = img_item.image.shape
+                if 0 <= pos.x() < shape[1] and 0 <= pos.y() < shape[0]:
+                    self._remove_negative_point(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
+                event.accept()
+                return True
             if self.brush_mode and event.button() == QtCore.Qt.MouseButton.LeftButton:
                 t = int(self.slider.value()) - 1
                 self._begin_history_capture("roi", t)
@@ -2923,10 +2964,20 @@ class ValveTracker(QtWidgets.QMainWindow):
     # Missing helpers
     # ============================
     def _store_view_range(self, key: str):
-        if self._restoring_view or self._updating_image:
+        if self._restoring_view or self._updating_image or self._syncing_view:
             return
         view = self._view_for_key(key)
-        self._view_ranges[key] = view.viewRange()
+        rng = view.viewRange()
+        self._view_ranges[key] = rng
+        if key in ("pcmra", "vel"):
+            other_key = "vel" if key == "pcmra" else "pcmra"
+            other_view = self._view_for_key(other_key)
+            self._syncing_view = True
+            try:
+                other_view.setRange(xRange=rng[0], yRange=rng[1], padding=0.0)
+            finally:
+                self._syncing_view = False
+            self._view_ranges[other_key] = rng
 
     def _restore_view_range(self, key: str):
         view = self._view_for_key(key)
