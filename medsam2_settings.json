@@ -3,5 +3,8 @@
   "runner": "C:\\Users\\show2\\MedSAM2\\medsam2_infer.py",
   "checkpoint": "C:\\Users\\show2\\MedSAM2\\checkpoints\\MedSAM2_latest.pt",
   "config": "configs/sam2.1_hiera_t512.yaml",
-  "device": "cpu"
+  "device": "cpu",
+  "debug_dir": "C:\\temp\\vt_medsam2_debug",
+  "debug_keep": true,
+  "force_512": true
 }

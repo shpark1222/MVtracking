@@ -13,6 +13,7 @@ _imageio_spec = importlib.util.find_spec("imageio.v2")
 imageio = importlib.import_module("imageio.v2") if _imageio_spec else None
 
 from pcmra_medsam2_refine import (
+    get_medsam2_settings,
     mask_to_polygon_points,
     polygon_points_to_roi_state,
     run_medsam2_subprocess,
@@ -2259,6 +2260,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         cy = float(np.clip(np.mean(y), 0, H - 1))
         return [x1, y1, x2, y2], [cx, cy]
 
+    def _medsam2_debug_dir(self) -> Optional[str]:
+        try:
+            settings = get_medsam2_settings()
+        except Exception:
+            return None
+        debug_dir = settings.get("debug_dir") or ""
+        if debug_dir and settings.get("debug_keep"):
+            return str(debug_dir)
+        return None
+
     def _refine_pcmra_roi_for_phase(self, t: int) -> Optional[str]:
         if t < 0 or t >= self.Nt:
             return "Invalid phase index."
@@ -2297,6 +2308,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         t = int(self.slider.value()) - 1
         err = self._refine_pcmra_roi_for_phase(t)
         if err is not None:
+            if "Empty contour" in err:
+                debug_dir = self._medsam2_debug_dir()
+                if debug_dir:
+                    err += f"\nDebug artifacts: {debug_dir}"
             QtWidgets.QMessageBox.warning(self, "MV tracker", f"MedSAM2 refine failed:\n{err}")
 
     def refine_roi_pcmra_all_phases(self) -> None:
@@ -2319,6 +2334,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         progress.setValue(self.Nt)
         if errors:
             msg = "Some phases failed to refine:\n" + "\n".join(errors[:10])
+            if any("Empty contour" in err for err in errors):
+                debug_dir = self._medsam2_debug_dir()
+                if debug_dir:
+                    msg += f"\nDebug artifacts: {debug_dir}"
             if len(errors) > 10:
                 msg += f"\n... and {len(errors) - 10} more."
             QtWidgets.QMessageBox.warning(self, "MV tracker", msg)
