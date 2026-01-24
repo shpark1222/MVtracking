@@ -427,17 +427,62 @@ def _resample_closed_curve(pts_xy: np.ndarray, target_n: int) -> np.ndarray:
 
 
 def mask_to_polygon_points(mask: np.ndarray) -> List[List[float]]:
+    import cv2
+
     mask_u8 = (mask > 0).astype(np.uint8)
     if mask_u8.ndim != 2:
         raise ValueError("mask must be 2D")
-    if mask_u8.sum() == 0:
+
+    m = (mask_u8 > 0).astype(np.uint8) * 255
+    nnz = int(np.count_nonzero(m))
+    if nnz == 0:
+        print(
+            "[mask_to_polygon_points] failed: empty mask, nnz=0, components=0, "
+            "contours_a=0, contours_b=0, path=A->B->C"
+        )
         return []
 
-    mask_largest = _largest_connected_component(mask_u8)
-    contour = _extract_contour_points(mask_largest)
-    if contour.size == 0:
+    _, labels = cv2.connectedComponents((m > 0).astype(np.uint8))
+    components = int(labels.max())
+
+    contour = None
+    contours_a, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    contours_a_count = len(contours_a)
+    if contours_a:
+        contour = max(contours_a, key=lambda c: (cv2.contourArea(c), c.shape[0]))
+        path_taken = "A"
+    else:
+        kernel = np.ones((5, 5), np.uint8)
+        m2 = cv2.morphologyEx(m, cv2.MORPH_CLOSE, kernel, iterations=2)
+        h, w = m2.shape
+        ff = m2.copy()
+        tmp = np.zeros((h + 2, w + 2), np.uint8)
+        cv2.floodFill(ff, tmp, (0, 0), 255)
+        ff_inv = cv2.bitwise_not(ff)
+        filled = cv2.bitwise_or(m2, ff_inv)
+        contours_b, _ = cv2.findContours(filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        contours_b_count = len(contours_b)
+        if contours_b:
+            contour = max(contours_b, key=lambda c: (cv2.contourArea(c), c.shape[0]))
+            path_taken = "A->B"
+        else:
+            ys, xs = np.nonzero(m)
+            if ys.size:
+                pts = np.stack([xs, ys], axis=1).astype(np.int32)
+                contour = cv2.convexHull(pts)
+                path_taken = "A->B->C"
+            else:
+                path_taken = "A->B->C (no points)"
+
+    if contour is None or len(contour) == 0:
+        print(
+            "[mask_to_polygon_points] failed: "
+            f"nnz={nnz}, components={components}, contours_a={contours_a_count}, "
+            f"contours_b={contours_b_count}, path={path_taken}"
+        )
         return []
 
+    contour = contour.reshape(-1, 2).astype(np.float64)
     target_n = int(np.clip(contour.shape[0], 64, 128))
     contour = _resample_closed_curve(contour, target_n)
     return contour.astype(np.float64).tolist()
