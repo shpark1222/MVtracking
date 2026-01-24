@@ -343,7 +343,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         right_box = QtWidgets.QVBoxLayout()
         right_box.addWidget(right_splitter)
         right_box.addLayout(pcmra_ctrl_row)
-        right_box.addLayout(pcmra_refine_row)
+        right_box.addWidget(self.pcmra_refine_widget, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
         right_widget = QtWidgets.QWidget()
         right_widget.setLayout(right_box)
 
@@ -619,6 +619,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.try_restore_state()
 
         self._emit_geometry_debug()
+        QtCore.QTimer.singleShot(0, self._shrink_refine_options_width)
 
         self._update_cine_roi_visibility()
         self.set_phase(0)
