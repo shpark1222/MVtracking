@@ -410,20 +410,14 @@ def _extract_contour_points(mask: np.ndarray) -> np.ndarray:
         return np.empty((0, 2), dtype=np.float64)
 
 
-def _resample_closed_curve(pts_xy: np.ndarray, target_n: int) -> np.ndarray:
+def _sample_contour_points(pts_xy: np.ndarray, n_points: int) -> np.ndarray:
     pts = np.asarray(pts_xy, dtype=np.float64)
-    if pts.ndim != 2 or len(pts) < 2:
+    if pts.ndim != 2 or pts.shape[0] == 0:
         return pts
-    if np.linalg.norm(pts[0] - pts[-1]) > 1e-6:
-        pts = np.vstack([pts, pts[0]])
-    d = np.sqrt(np.sum(np.diff(pts, axis=0) ** 2, axis=1))
-    s = np.concatenate([[0.0], np.cumsum(d)])
-    if s[-1] <= 0:
-        return pts[:-1]
-    s_new = np.linspace(0, s[-1], target_n + 1, endpoint=True)[:-1]
-    x_new = np.interp(s_new, s, pts[:, 0])
-    y_new = np.interp(s_new, s, pts[:, 1])
-    return np.column_stack([x_new, y_new]).astype(np.float64)
+    if n_points <= 0:
+        raise ValueError("n_points must be positive")
+    idx = np.linspace(0, pts.shape[0] - 1, n_points, dtype=int)
+    return pts[idx].astype(np.float64)
 
 
 def mask_to_polygon_points(mask: np.ndarray) -> List[List[float]]:
@@ -483,8 +477,7 @@ def mask_to_polygon_points(mask: np.ndarray) -> List[List[float]]:
         return []
 
     contour = contour.reshape(-1, 2).astype(np.float64)
-    target_n = int(np.clip(contour.shape[0], 64, 128))
-    contour = _resample_closed_curve(contour, target_n)
+    contour = _sample_contour_points(contour, n_points=10)
     return contour.astype(np.float64).tolist()
 
 
