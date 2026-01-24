@@ -23,6 +23,9 @@ DEFAULT_SETTINGS = {
     "checkpoint": MEDSAM2_CKPT,
     "config": MEDSAM2_CONFIG,
     "device": MEDSAM2_DEVICE,
+    "debug_dir": "",
+    "debug_keep": False,
+    "force_512": True,
 }
 
 SETTINGS_ENV_MAP = {
@@ -80,6 +83,28 @@ def _get_pil_image():
     return None
 
 
+def to_uint8(img: np.ndarray) -> np.ndarray:
+    arr = np.asarray(img)
+    if arr.dtype == np.uint8:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return np.zeros(arr.shape, dtype=np.uint8)
+    p1, p99 = np.percentile(finite, [1.0, 99.0])
+    if not np.isfinite(p1) or not np.isfinite(p99) or p99 <= p1:
+        vmin = float(np.min(finite))
+        vmax = float(np.max(finite))
+        if vmax <= vmin:
+            return np.zeros(arr.shape, dtype=np.uint8)
+    else:
+        vmin = float(p1)
+        vmax = float(p99)
+    scaled = (arr - vmin) / (vmax - vmin)
+    scaled = np.clip(scaled, 0.0, 1.0)
+    return np.round(scaled * 255.0).astype(np.uint8)
+
+
 def _resize_u8_nn(img_u8: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
     target_h, target_w = target_hw
     src_h, src_w = img_u8.shape[:2]
@@ -96,7 +121,7 @@ def _resize_u8_nn(img_u8: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
     return img_u8[np.ix_(y_idx, x_idx, np.arange(img_u8.shape[2]))]
 
 
-def _resize_u8_and_prompt(
+def _resize_to_512(
     img_u8: np.ndarray,
     box_xyxy: Sequence[float],
     point_xy: Optional[Sequence[float]],
@@ -151,7 +176,7 @@ def _resize_mask_back(mask: np.ndarray, out_hw: Tuple[int, int]) -> np.ndarray:
     return _resize_u8_nn(mask.astype(np.uint8), (out_h, out_w))
 
 
-def _pad_box(box: Sequence[float], target_hw: Tuple[int, int], frac: float = 0.15) -> List[float]:
+def _pad_box(box: Sequence[float], target_hw: Tuple[int, int], frac: float = 0.2) -> List[float]:
     h, w = target_hw
     x1, y1, x2, y2 = [float(v) for v in box]
     bw = x2 - x1
@@ -189,6 +214,37 @@ def _log_empty_mask(
         print("MedSAM2 stderr:\n" + stderr, file=sys.stderr)
 
 
+def _log_run_info(
+    *,
+    img: np.ndarray,
+    box_xyxy: Sequence[float],
+    point_xy: Optional[Sequence[float]],
+    cmd: Sequence[str],
+    stdout: str,
+    stderr: str,
+) -> None:
+    stats = {
+        "shape": img.shape,
+        "dtype": str(img.dtype),
+        "min": float(np.min(img)) if img.size else 0.0,
+        "max": float(np.max(img)) if img.size else 0.0,
+        "p1": float(np.percentile(img, 1.0)) if img.size else 0.0,
+        "p99": float(np.percentile(img, 99.0)) if img.size else 0.0,
+    }
+    cmd_str = subprocess.list2cmdline(list(cmd))
+    print(
+        "MedSAM2 input stats: "
+        f"shape={stats['shape']}, dtype={stats['dtype']}, "
+        f"min={stats['min']:.3f}, max={stats['max']:.3f}, "
+        f"p1={stats['p1']:.3f}, p99={stats['p99']:.3f}",
+        file=sys.stderr,
+    )
+    print(f"MedSAM2 prompt: box={list(box_xyxy)}, point={None if point_xy is None else list(point_xy)}", file=sys.stderr)
+    print(f"MedSAM2 command: {cmd_str}", file=sys.stderr)
+    print("MedSAM2 stdout:\n" + (stdout or ""), file=sys.stderr)
+    print("MedSAM2 stderr:\n" + (stderr or ""), file=sys.stderr)
+
+
 def run_medsam2_subprocess(
     img_u8: np.ndarray,
     box_xyxy: Sequence[float],
@@ -197,6 +253,11 @@ def run_medsam2_subprocess(
     settings: Optional[dict] = None,
 ) -> np.ndarray:
     settings = settings or get_medsam2_settings()
+    img_u8 = to_uint8(img_u8)
+    debug_dir = settings.get("debug_dir") or ""
+    debug_keep = bool(settings.get("debug_keep"))
+    force_512 = bool(settings.get("force_512", True))
+    runner_cwd = Path(settings["runner"]).parent
 
     def _run_once(td: Path, img_in: np.ndarray, box_in: Sequence[float], pt_in: Optional[Sequence[float]]):
         td.mkdir(parents=True, exist_ok=True)
@@ -229,7 +290,15 @@ def run_medsam2_subprocess(
             "--device",
             settings.get("device", MEDSAM2_DEVICE),
         ]
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, cwd=runner_cwd)
+        _log_run_info(
+            img=img_in,
+            box_xyxy=box_in,
+            point_xy=pt_in,
+            cmd=cmd,
+            stdout=p.stdout or "",
+            stderr=p.stderr or "",
+        )
         if p.returncode != 0:
             raise RuntimeError(
                 "MedSAM2 failed\nSTDOUT:\n" + (p.stdout or "") + "\nSTDERR:\n" + (p.stderr or "")
@@ -241,9 +310,15 @@ def run_medsam2_subprocess(
         return (mask > 0).astype(np.uint8), (p.stdout or ""), (p.stderr or "")
 
     def _run_in_dir(td: Path) -> np.ndarray:
-        img_rs, box_rs, pt_rs, orig_hw = _resize_u8_and_prompt(
-            img_u8, box_xyxy, point_xy, target=512
-        )
+        if force_512:
+            img_rs, box_rs, pt_rs, orig_hw = _resize_to_512(
+                img_u8, box_xyxy, point_xy, target=512
+            )
+        else:
+            img_rs = img_u8
+            box_rs = [float(v) for v in box_xyxy]
+            pt_rs = None if point_xy is None else [float(point_xy[0]), float(point_xy[1])]
+            orig_hw = img_u8.shape[:2]
         resized = img_rs.shape[:2] != img_u8.shape[:2]
 
         mask_512, stdout, stderr = _run_once(td, img_rs, box_rs, pt_rs)
@@ -258,11 +333,11 @@ def run_medsam2_subprocess(
                 stdout=stdout,
                 stderr=stderr,
             )
-            box_pad = _pad_box(box_rs, (512, 512), frac=0.2)
+            box_pad = _pad_box(box_rs, img_rs.shape[:2], frac=0.2)
             mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, pt_rs)
 
         if mask_512.sum() == 0 and pt_rs is not None:
-            box_pad = _pad_box(box_rs, (512, 512), frac=0.2)
+            box_pad = _pad_box(box_rs, img_rs.shape[:2], frac=0.2)
             mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, None)
 
         if mask_512.sum() == 0:
@@ -282,6 +357,9 @@ def run_medsam2_subprocess(
 
     if tmpdir is not None:
         return _run_in_dir(Path(tmpdir))
+
+    if debug_keep and debug_dir:
+        return _run_in_dir(Path(debug_dir))
 
     with tempfile.TemporaryDirectory(prefix="vt_medsam2_") as td:
         return _run_in_dir(Path(td))
