@@ -295,9 +295,6 @@ def run_medsam2_subprocess(
             if len(pts_in) == 1:
                 prompt["point_xy"] = [float(pts_in[0][0]), float(pts_in[0][1])]
                 prompt["point_label"] = int(labels_in[0])
-            else:
-                prompt["point_xy"] = [[float(pt[0]), float(pt[1])] for pt in pts_in]
-                prompt["point_label"] = [int(lbl) for lbl in labels_in]
 
         pr_json.write_text(json.dumps(prompt), encoding="utf-8")
 
