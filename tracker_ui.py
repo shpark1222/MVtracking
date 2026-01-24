@@ -12,8 +12,14 @@ from scipy.ndimage import map_coordinates
 _imageio_spec = importlib.util.find_spec("imageio.v2")
 imageio = importlib.import_module("imageio.v2") if _imageio_spec else None
 
-from geometry import reslice_plane_fixedN, cine_line_to_patient_xyz, cine_display_mapping
-from stl_conversion import convert_plane_to_stl
+from geometry import (
+    reslice_plane_fixedN,
+    cine_line_to_patient_xyz,
+    cine_display_mapping,
+    make_plane_from_cine_line,
+    auto_fov_from_line,
+)
+from stl_conversion import convert_plane_to_stl, write_stl_from_patient_contour
 from mvpack_io import MVPack, CineGeom, load_mvpack_h5
 from plot_widgets import PlotCanvas, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
@@ -407,6 +413,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.copy_regional_selector.addItems(["Current chart", "All metrics"])
         self.btn_save = QtWidgets.QPushButton("Save to MVtrack.h5")
         self.btn_convert_stl = QtWidgets.QPushButton("Convert STL")
+        self.stl_mode_selector = QtWidgets.QComboBox()
+        self.stl_mode_selector.addItems(
+            [
+                "Cine-based STL",
+                "Patient/PCMRA contour STL",
+            ]
+        )
+        self.stl_mode_selector.setToolTip(
+            "Cine-based: triangulates the cine plane ROI.\n"
+            "Patient/PCMRA: uses the PCMRA ROI contour in patient (LPS) space."
+        )
         self.btn_cine_gif = QtWidgets.QPushButton("Export Cine GIF")
 
         btn_row.addWidget(self.btn_compute)
@@ -417,6 +434,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.copy_regional_selector)
         btn_row.addWidget(self.btn_save)
         btn_row.addStretch(1)
+        btn_row.addWidget(self.stl_mode_selector)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
         btn_row.addWidget(self.btn_pcmra_gif)
@@ -1376,22 +1394,75 @@ class ValveTracker(QtWidgets.QMainWindow):
         out_dir = os.path.dirname(out_path)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        convert_plane_to_stl(
-            out_path=out_path,
-            vol_geom=self.pack.geom,
-            cine_geom=cine_geom,
-            line_xy=line_xy,
-            roi_abs_pts=roi_abs,
-            vol_shape=vol_shape,
-            npix=self.Npix,
-            cine_shape=cine_img_raw.shape,
-            angle_offset_deg=angle_deg,
-            output_space="RAS",
-        )
+        stl_mode = self.stl_mode_selector.currentText()
+        if stl_mode.startswith("Patient/PCMRA"):
+            contour_pts = self._roi_contour_points((self.Npix, self.Npix))
+            if contour_pts is None or contour_pts.size == 0:
+                self.memo.appendPlainText("STL save failed: no PCMRA contour available.")
+                return
+            contour_pts = contour_pts.copy()
+            contour_pts[:, 1] = (self.Npix - 1) - contour_pts[:, 1]
+            contour_xyz = self._pcmra_contour_patient_xyz(
+                contour_pts=contour_pts,
+                line_xy=line_xy,
+                cine_geom=cine_geom,
+                cine_shape=cine_img_raw.shape,
+                angle_deg=angle_deg,
+            )
+            if contour_xyz is None or contour_xyz.size == 0:
+                self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
+                return
+            write_stl_from_patient_contour(
+                out_path=out_path,
+                contour_pts_xyz=contour_xyz,
+                output_space="LPS",
+            )
+        else:
+            convert_plane_to_stl(
+                out_path=out_path,
+                vol_geom=self.pack.geom,
+                cine_geom=cine_geom,
+                line_xy=line_xy,
+                roi_abs_pts=roi_abs,
+                vol_shape=vol_shape,
+                npix=self.Npix,
+                cine_shape=cine_img_raw.shape,
+                angle_offset_deg=angle_deg,
+                output_space="RAS",
+            )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
             return
-        self.memo.appendPlainText(f"STL saved: {out_path}")
+        if stl_mode.startswith("Patient/PCMRA"):
+            self.memo.appendPlainText(
+                f"STL saved: {out_path} (patient/PCMRA contour in LPS; set output_space='RAS' for RAS)."
+            )
+        else:
+            self.memo.appendPlainText(f"STL saved: {out_path} (cine plane ROI in RAS).")
+
+    def _pcmra_contour_patient_xyz(
+        self,
+        contour_pts: np.ndarray,
+        line_xy: np.ndarray,
+        cine_geom: CineGeom,
+        cine_shape: Tuple[int, int],
+        angle_deg: float,
+    ) -> Optional[np.ndarray]:
+        if contour_pts is None or contour_pts.size == 0:
+            return None
+        if self.Npix <= 1:
+            return None
+        c, u, v, _ = make_plane_from_cine_line(
+            line_xy,
+            cine_geom,
+            cine_shape=cine_shape,
+            angle_offset_deg=angle_deg,
+        )
+        fov_half = auto_fov_from_line(line_xy, cine_geom)
+        scale = (2.0 * fov_half) / float(self.Npix - 1)
+        uu = (-fov_half + contour_pts[:, 0] * scale).reshape(-1, 1)
+        vv = (-fov_half + contour_pts[:, 1] * scale).reshape(-1, 1)
+        return c[None, :] + uu * u[None, :] + vv * v[None, :]
 
     def _normalize_image(self, img: np.ndarray, vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
         data = img.astype(np.float64)
