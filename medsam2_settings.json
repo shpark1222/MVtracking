@@ -1,0 +1,7 @@
+{
+  "python": "C:\\Users\\show2\\miniconda3\\envs\\medsam2\\python.exe",
+  "runner": "C:\\Users\\show2\\MedSAM2\\medsam2_infer.py",
+  "checkpoint": "C:\\Users\\show2\\MedSAM2\\checkpoints\\MedSAM2_latest.pt",
+  "config": "configs/sam2.1_hiera_t512.yaml",
+  "device": "cpu"
+}
