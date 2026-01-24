@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import importlib.util
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from typing import Iterable, List, Optional, Sequence, Tuple
 
@@ -62,6 +64,131 @@ def get_medsam2_settings(settings_path: Optional[Path] = None) -> dict:
     return settings
 
 
+def _get_cv2():
+    if importlib.util.find_spec("cv2") is not None:
+        import cv2
+
+        return cv2
+    return None
+
+
+def _get_pil_image():
+    if importlib.util.find_spec("PIL.Image") is not None:
+        from PIL import Image
+
+        return Image
+    return None
+
+
+def _resize_u8_nn(img_u8: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
+    target_h, target_w = target_hw
+    src_h, src_w = img_u8.shape[:2]
+    if (src_h, src_w) == (target_h, target_w):
+        return img_u8
+    y_idx = np.clip(
+        np.round(np.linspace(0, src_h - 1, target_h)).astype(np.int64), 0, src_h - 1
+    )
+    x_idx = np.clip(
+        np.round(np.linspace(0, src_w - 1, target_w)).astype(np.int64), 0, src_w - 1
+    )
+    if img_u8.ndim == 2:
+        return img_u8[np.ix_(y_idx, x_idx)]
+    return img_u8[np.ix_(y_idx, x_idx, np.arange(img_u8.shape[2]))]
+
+
+def _resize_u8_and_prompt(
+    img_u8: np.ndarray,
+    box_xyxy: Sequence[float],
+    point_xy: Optional[Sequence[float]],
+    target: int = 512,
+) -> Tuple[np.ndarray, List[float], Optional[List[float]], Tuple[int, int]]:
+    h, w = img_u8.shape[:2]
+    if (h, w) == (target, target):
+        return (
+            img_u8,
+            [float(v) for v in box_xyxy],
+            None if point_xy is None else [float(point_xy[0]), float(point_xy[1])],
+            (h, w),
+        )
+
+    cv2 = _get_cv2()
+    if cv2 is not None:
+        img_rs = cv2.resize(img_u8, (target, target), interpolation=cv2.INTER_LINEAR)
+    else:
+        pil_image = _get_pil_image()
+        if pil_image is not None:
+            img_rs = np.array(pil_image.fromarray(img_u8).resize((target, target)))
+        else:
+            img_rs = _resize_u8_nn(img_u8, (target, target))
+
+    scale_x = float(target) / float(w)
+    scale_y = float(target) / float(h)
+
+    x1, y1, x2, y2 = [float(v) for v in box_xyxy]
+    box_rs = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
+
+    pt_rs = None
+    if point_xy is not None:
+        pt_rs = [float(point_xy[0]) * scale_x, float(point_xy[1]) * scale_y]
+
+    return img_rs.astype(np.uint8), box_rs, pt_rs, (h, w)
+
+
+def _resize_mask_back(mask: np.ndarray, out_hw: Tuple[int, int]) -> np.ndarray:
+    out_h, out_w = out_hw
+    if mask.shape[:2] == (out_h, out_w):
+        return mask
+    cv2 = _get_cv2()
+    if cv2 is not None:
+        return cv2.resize(mask.astype(np.uint8), (out_w, out_h), interpolation=cv2.INTER_NEAREST)
+    pil_image = _get_pil_image()
+    if pil_image is not None:
+        return np.array(
+            pil_image.fromarray(mask.astype(np.uint8)).resize(
+                (out_w, out_h), resample=pil_image.NEAREST
+            )
+        )
+    return _resize_u8_nn(mask.astype(np.uint8), (out_h, out_w))
+
+
+def _pad_box(box: Sequence[float], target_hw: Tuple[int, int], frac: float = 0.15) -> List[float]:
+    h, w = target_hw
+    x1, y1, x2, y2 = [float(v) for v in box]
+    bw = x2 - x1
+    bh = y2 - y1
+    px = bw * frac
+    py = bh * frac
+    x1 = max(0.0, x1 - px)
+    y1 = max(0.0, y1 - py)
+    x2 = min(float(w - 1), x2 + px)
+    y2 = min(float(h - 1), y2 + py)
+    return [x1, y1, x2, y2]
+
+
+def _log_empty_mask(
+    *,
+    stage: str,
+    img_shape: Tuple[int, int],
+    box_xyxy: Sequence[float],
+    point_xy: Optional[Sequence[float]],
+    target: int,
+    resized: bool,
+    stdout: str,
+    stderr: str,
+) -> None:
+    msg = (
+        "MedSAM2 empty mask: "
+        f"stage={stage}, input_shape={img_shape}, box={list(box_xyxy)}, "
+        f"point={None if point_xy is None else list(point_xy)}, "
+        f"target={target}, resized={resized}"
+    )
+    print(msg, file=sys.stderr)
+    if stdout:
+        print("MedSAM2 stdout:\n" + stdout, file=sys.stderr)
+    if stderr:
+        print("MedSAM2 stderr:\n" + stderr, file=sys.stderr)
+
+
 def run_medsam2_subprocess(
     img_u8: np.ndarray,
     box_xyxy: Sequence[float],
@@ -71,17 +198,17 @@ def run_medsam2_subprocess(
 ) -> np.ndarray:
     settings = settings or get_medsam2_settings()
 
-    def _run_in_dir(td: Path) -> np.ndarray:
+    def _run_once(td: Path, img_in: np.ndarray, box_in: Sequence[float], pt_in: Optional[Sequence[float]]):
         td.mkdir(parents=True, exist_ok=True)
         in_npy = td / "input.npy"
         pr_json = td / "prompt.json"
         out_npy = td / "mask.npy"
 
-        np.save(in_npy, img_u8)
+        np.save(in_npy, img_in)
 
-        prompt = {"box_xyxy": [float(v) for v in box_xyxy]}
-        if point_xy is not None:
-            prompt["point_xy"] = [float(point_xy[0]), float(point_xy[1])]
+        prompt = {"box_xyxy": [float(v) for v in box_in]}
+        if pt_in is not None:
+            prompt["point_xy"] = [float(pt_in[0]), float(pt_in[1])]
             prompt["point_label"] = 1
 
         pr_json.write_text(json.dumps(prompt), encoding="utf-8")
@@ -111,6 +238,46 @@ def run_medsam2_subprocess(
         if not out_npy.exists():
             raise RuntimeError("MedSAM2 failed to produce mask.npy")
         mask = np.load(out_npy)
+        return (mask > 0).astype(np.uint8), (p.stdout or ""), (p.stderr or "")
+
+    def _run_in_dir(td: Path) -> np.ndarray:
+        img_rs, box_rs, pt_rs, orig_hw = _resize_u8_and_prompt(
+            img_u8, box_xyxy, point_xy, target=512
+        )
+        resized = img_rs.shape[:2] != img_u8.shape[:2]
+
+        mask_512, stdout, stderr = _run_once(td, img_rs, box_rs, pt_rs)
+        if mask_512.sum() == 0:
+            _log_empty_mask(
+                stage="initial",
+                img_shape=img_u8.shape[:2],
+                box_xyxy=box_xyxy,
+                point_xy=point_xy,
+                target=512,
+                resized=resized,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            box_pad = _pad_box(box_rs, (512, 512), frac=0.2)
+            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, pt_rs)
+
+        if mask_512.sum() == 0 and pt_rs is not None:
+            box_pad = _pad_box(box_rs, (512, 512), frac=0.2)
+            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, None)
+
+        if mask_512.sum() == 0:
+            _log_empty_mask(
+                stage="final",
+                img_shape=img_u8.shape[:2],
+                box_xyxy=box_xyxy,
+                point_xy=point_xy,
+                target=512,
+                resized=resized,
+                stdout=stdout,
+                stderr=stderr,
+            )
+
+        mask = _resize_mask_back(mask_512, orig_hw)
         return (mask > 0).astype(np.uint8)
 
     if tmpdir is not None:
