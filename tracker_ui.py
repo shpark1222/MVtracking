@@ -622,7 +622,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.try_restore_state()
 
         self._emit_geometry_debug()
-        QtCore.QTimer.singleShot(0, self._shrink_refine_options_width)
+        shrink_callback = self._shrink_refine_options_width
+        QtCore.QTimer.singleShot(0, shrink_callback)
 
         self._update_cine_roi_visibility()
         self.set_phase(0)
@@ -661,6 +662,19 @@ class ValveTracker(QtWidgets.QMainWindow):
                 widget.setEnabled(False)
                 widget.setToolTip(reason)
             self.pcmra_refine_widget.setToolTip(reason)
+
+    def _shrink_refine_options_width(self) -> None:
+        if not hasattr(self, "pcmra_refine_widget"):
+            return
+        self.pcmra_refine_widget.adjustSize()
+        size_hint = self.pcmra_refine_widget.sizeHint()
+        size_policy = self.pcmra_refine_widget.sizePolicy()
+        self.pcmra_refine_widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            size_policy.verticalPolicy(),
+        )
+        self.pcmra_refine_widget.setMaximumWidth(size_hint.width())
+        self.pcmra_refine_widget.updateGeometry()
 
     # ============================
     # Restore state
