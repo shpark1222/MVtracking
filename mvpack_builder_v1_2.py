@@ -396,11 +396,19 @@ class PackBuilder(QtWidgets.QWidget):
             geom["sliceStep"][0],
         )
 
-        out = QtWidgets.QFileDialog.getExistingDirectory(self)
-        if not out:
+        base_dir = self.dcm4d or self.mr or os.getcwd()
+        default_path = os.path.join(base_dir, "mvpack.h5")
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save mvpack",
+            default_path,
+            "HDF5 Files (*.h5)",
+        )
+        if not out_path:
             return
+        if not out_path.lower().endswith(".h5"):
+            out_path = f"{out_path}.h5"
 
-        out_path = os.path.join(out, "mvpack.h5")
         with h5py.File(out_path, "w") as f:
             g = f.create_group("data")
             g["vel"] = vel

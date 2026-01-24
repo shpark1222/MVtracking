@@ -1092,6 +1092,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         if cine_auto_levels:
             self._capture_cine_auto_once()
 
+        # Auto-level captures update the stored ranges; sync controls afterwards so
+        # the UI reflects the automatic windowing instead of the 0-1 placeholders.
+        self._sync_level_controls_from_state()
+        self._apply_levels_if_set()
+
         if self.roi_state[t] is None:
             self.roi_state[t] = self.default_poly_roi_state_from_image(Ivelmag)
 
