@@ -16,7 +16,7 @@ MEDSAM2_RUNNER = r"C:\Users\show2\MedSAM2\medsam2_infer.py"
 MEDSAM2_CKPT = r"C:\Users\show2\MedSAM2\checkpoints\MedSAM2_latest.pt"
 MEDSAM2_CONFIG = "configs/sam2.1_hiera_t512.yaml"
 MEDSAM2_DEVICE = "cpu"
-DEFAULT_CONTOUR_POINTS = 10
+DEFAULT_CONTOUR_POINTS = 20
 
 DEFAULT_SETTINGS = {
     "python": MEDSAM2_PY,
@@ -126,15 +126,15 @@ def _resize_u8_nn(img_u8: np.ndarray, target_hw: Tuple[int, int]) -> np.ndarray:
 def _resize_to_512(
     img_u8: np.ndarray,
     box_xyxy: Sequence[float],
-    point_xy: Optional[Sequence[float]],
+    points_xy: Optional[Sequence[Sequence[float]]],
     target: int = 512,
-) -> Tuple[np.ndarray, List[float], Optional[List[float]], Tuple[int, int]]:
+) -> Tuple[np.ndarray, List[float], Optional[List[List[float]]], Tuple[int, int]]:
     h, w = img_u8.shape[:2]
     if (h, w) == (target, target):
         return (
             img_u8,
             [float(v) for v in box_xyxy],
-            None if point_xy is None else [float(point_xy[0]), float(point_xy[1])],
+            None if points_xy is None else [[float(pt[0]), float(pt[1])] for pt in points_xy],
             (h, w),
         )
 
@@ -154,11 +154,13 @@ def _resize_to_512(
     x1, y1, x2, y2 = [float(v) for v in box_xyxy]
     box_rs = [x1 * scale_x, y1 * scale_y, x2 * scale_x, y2 * scale_y]
 
-    pt_rs = None
-    if point_xy is not None:
-        pt_rs = [float(point_xy[0]) * scale_x, float(point_xy[1]) * scale_y]
+    pts_rs = None
+    if points_xy is not None:
+        pts_rs = [
+            [float(pt[0]) * scale_x, float(pt[1]) * scale_y] for pt in points_xy
+        ]
 
-    return img_rs.astype(np.uint8), box_rs, pt_rs, (h, w)
+    return img_rs.astype(np.uint8), box_rs, pts_rs, (h, w)
 
 
 def _resize_mask_back(mask: np.ndarray, out_hw: Tuple[int, int]) -> np.ndarray:
@@ -197,7 +199,8 @@ def _log_empty_mask(
     stage: str,
     img_shape: Tuple[int, int],
     box_xyxy: Sequence[float],
-    point_xy: Optional[Sequence[float]],
+    points_xy: Optional[Sequence[Sequence[float]]],
+    point_labels: Optional[Sequence[int]],
     target: int,
     resized: bool,
     stdout: str,
@@ -206,7 +209,8 @@ def _log_empty_mask(
     msg = (
         "MedSAM2 empty mask: "
         f"stage={stage}, input_shape={img_shape}, box={list(box_xyxy)}, "
-        f"point={None if point_xy is None else list(point_xy)}, "
+        f"points={None if points_xy is None else list(points_xy)}, "
+        f"labels={None if point_labels is None else list(point_labels)}, "
         f"target={target}, resized={resized}"
     )
     print(msg, file=sys.stderr)
@@ -220,7 +224,8 @@ def _log_run_info(
     *,
     img: np.ndarray,
     box_xyxy: Sequence[float],
-    point_xy: Optional[Sequence[float]],
+    points_xy: Optional[Sequence[Sequence[float]]],
+    point_labels: Optional[Sequence[int]],
     cmd: Sequence[str],
     stdout: str,
     stderr: str,
@@ -241,7 +246,12 @@ def _log_run_info(
         f"p1={stats['p1']:.3f}, p99={stats['p99']:.3f}",
         file=sys.stderr,
     )
-    print(f"MedSAM2 prompt: box={list(box_xyxy)}, point={None if point_xy is None else list(point_xy)}", file=sys.stderr)
+    print(
+        "MedSAM2 prompt: "
+        f"box={list(box_xyxy)}, points={None if points_xy is None else list(points_xy)}, "
+        f"labels={None if point_labels is None else list(point_labels)}",
+        file=sys.stderr,
+    )
     print(f"MedSAM2 command: {cmd_str}", file=sys.stderr)
     print("MedSAM2 stdout:\n" + (stdout or ""), file=sys.stderr)
     print("MedSAM2 stderr:\n" + (stderr or ""), file=sys.stderr)
@@ -250,7 +260,8 @@ def _log_run_info(
 def run_medsam2_subprocess(
     img_u8: np.ndarray,
     box_xyxy: Sequence[float],
-    point_xy: Optional[Sequence[float]] = None,
+    points_xy: Optional[Sequence[Sequence[float]]] = None,
+    point_labels: Optional[Sequence[int]] = None,
     tmpdir: Optional[Path] = None,
     settings: Optional[dict] = None,
 ) -> np.ndarray:
@@ -261,7 +272,13 @@ def run_medsam2_subprocess(
     force_512 = bool(settings.get("force_512", True))
     runner_cwd = Path(settings["runner"]).parent
 
-    def _run_once(td: Path, img_in: np.ndarray, box_in: Sequence[float], pt_in: Optional[Sequence[float]]):
+    def _run_once(
+        td: Path,
+        img_in: np.ndarray,
+        box_in: Sequence[float],
+        pts_in: Optional[Sequence[Sequence[float]]],
+        labels_in: Optional[Sequence[int]],
+    ):
         td.mkdir(parents=True, exist_ok=True)
         in_npy = td / "input.npy"
         pr_json = td / "prompt.json"
@@ -270,9 +287,13 @@ def run_medsam2_subprocess(
         np.save(in_npy, img_in)
 
         prompt = {"box_xyxy": [float(v) for v in box_in]}
-        if pt_in is not None:
-            prompt["point_xy"] = [float(pt_in[0]), float(pt_in[1])]
-            prompt["point_label"] = 1
+        if pts_in:
+            prompt["points_xy"] = [[float(pt[0]), float(pt[1])] for pt in pts_in]
+            if labels_in is None:
+                labels_in = [1] * len(pts_in)
+            prompt["points_label"] = [int(lbl) for lbl in labels_in]
+            prompt["point_xy"] = [float(pts_in[0][0]), float(pts_in[0][1])]
+            prompt["point_label"] = int(labels_in[0])
 
         pr_json.write_text(json.dumps(prompt), encoding="utf-8")
 
@@ -296,7 +317,8 @@ def run_medsam2_subprocess(
         _log_run_info(
             img=img_in,
             box_xyxy=box_in,
-            point_xy=pt_in,
+            points_xy=pts_in,
+            point_labels=labels_in,
             cmd=cmd,
             stdout=p.stdout or "",
             stderr=p.stderr or "",
@@ -313,41 +335,43 @@ def run_medsam2_subprocess(
 
     def _run_in_dir(td: Path) -> np.ndarray:
         if force_512:
-            img_rs, box_rs, pt_rs, orig_hw = _resize_to_512(
-                img_u8, box_xyxy, point_xy, target=512
+            img_rs, box_rs, pts_rs, orig_hw = _resize_to_512(
+                img_u8, box_xyxy, points_xy, target=512
             )
         else:
             img_rs = img_u8
             box_rs = [float(v) for v in box_xyxy]
-            pt_rs = None if point_xy is None else [float(point_xy[0]), float(point_xy[1])]
+            pts_rs = None if points_xy is None else [[float(pt[0]), float(pt[1])] for pt in points_xy]
             orig_hw = img_u8.shape[:2]
         resized = img_rs.shape[:2] != img_u8.shape[:2]
 
-        mask_512, stdout, stderr = _run_once(td, img_rs, box_rs, pt_rs)
+        mask_512, stdout, stderr = _run_once(td, img_rs, box_rs, pts_rs, point_labels)
         if mask_512.sum() == 0:
             _log_empty_mask(
                 stage="initial",
                 img_shape=img_u8.shape[:2],
                 box_xyxy=box_xyxy,
-                point_xy=point_xy,
+                points_xy=points_xy,
+                point_labels=point_labels,
                 target=512,
                 resized=resized,
                 stdout=stdout,
                 stderr=stderr,
             )
             box_pad = _pad_box(box_rs, img_rs.shape[:2], frac=0.2)
-            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, pt_rs)
+            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, pts_rs, point_labels)
 
-        if mask_512.sum() == 0 and pt_rs is not None:
+        if mask_512.sum() == 0 and pts_rs is not None:
             box_pad = _pad_box(box_rs, img_rs.shape[:2], frac=0.2)
-            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, None)
+            mask_512, stdout, stderr = _run_once(td, img_rs, box_pad, None, None)
 
         if mask_512.sum() == 0:
             _log_empty_mask(
                 stage="final",
                 img_shape=img_u8.shape[:2],
                 box_xyxy=box_xyxy,
-                point_xy=point_xy,
+                points_xy=points_xy,
+                point_labels=point_labels,
                 target=512,
                 resized=resized,
                 stdout=stdout,

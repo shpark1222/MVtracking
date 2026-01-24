@@ -102,6 +102,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.brush_mode = False
         self.brush_radius = 3.0
         self.brush_strength = 0.02
+        self._negative_point_mode = False
+        self._negative_points: List[List[List[float]]] = [[] for _ in range(self.Nt)]
+        self._negative_point_marker = None
         self.play_fps = 10.0
         self._play_timer = QtCore.QTimer(self)
         self.line_angle = [0.0] * self.Nt
@@ -250,11 +253,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl_row.addWidget(self.btn_brush)
         pcmra_ctrl_row.addStretch(1)
 
-        self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (PCMRA, this phase)")
-        self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (PCMRA, all phases)")
+        self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
+        self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
+        self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
+        self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
         pcmra_refine_row = QtWidgets.QHBoxLayout()
+        pcmra_refine_row.setContentsMargins(0, 0, 0, 0)
+        pcmra_refine_row.addWidget(self.chk_negative_points)
         pcmra_refine_row.addWidget(self.btn_refine_roi_phase)
         pcmra_refine_row.addWidget(self.btn_refine_roi_all)
+        pcmra_refine_row.addStretch(1)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -1042,6 +1050,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         if isinstance(self.focusWidget(), (QtWidgets.QAbstractSpinBox, QtWidgets.QLineEdit)):
             super().keyPressEvent(event)
             return
+        if event.key() == QtCore.Qt.Key.Key_N:
+            self._set_negative_point_mode(not self._negative_point_mode)
+            return
         if event.key() == QtCore.Qt.Key.Key_2:
             self.toggle_brush_mode()
             return
@@ -1118,6 +1129,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.ensure_poly_rois()
         self.apply_roi_state_both(self.roi_state[t])
         self.update_spline_overlay(t)
+        self._update_negative_point_overlay(t)
         self.update_metric_labels(t)
         self._update_roi_lock_ui()
         self.set_poly_editable(self.edit_mode and not self._is_roi_locked(t))
@@ -1654,6 +1666,15 @@ class ValveTracker(QtWidgets.QMainWindow):
                 brush=pg.mkBrush("m"),
             )
             self.pcmra_view.getView().addItem(self.segment_anchor_marker)
+
+        if not hasattr(self, "_negative_point_marker") or self._negative_point_marker is None:
+            self._negative_point_marker = pg.ScatterPlotItem(
+                size=10,
+                pen=pg.mkPen((255, 80, 80)),
+                brush=pg.mkBrush(255, 80, 80, 120),
+                symbol="x",
+            )
+            self.pcmra_view.getView().addItem(self._negative_point_marker)
 
         if not self._segment_label_items_pcm:
             for _ in range(6):
@@ -2272,7 +2293,26 @@ class ValveTracker(QtWidgets.QMainWindow):
             return str(debug_dir)
         return None
 
-    def _refine_pcmra_roi_for_phase(self, t: int) -> Optional[str]:
+    def _prompt_contour_point_count(self) -> Optional[int]:
+        try:
+            settings = get_medsam2_settings()
+        except Exception:
+            settings = {}
+        default_points = int(settings.get("contour_points", 20))
+        count, ok = QtWidgets.QInputDialog.getInt(
+            self,
+            "Contour points",
+            "Number of contour points:",
+            default_points,
+            3,
+            200,
+            1,
+        )
+        if not ok:
+            return None
+        return int(count)
+
+    def _refine_pcmra_roi_for_phase(self, t: int, n_points: Optional[int] = None) -> Optional[str]:
         if t < 0 or t >= self.Nt:
             return "Invalid phase index."
         if self._is_roi_locked(t):
@@ -2285,15 +2325,23 @@ class ValveTracker(QtWidgets.QMainWindow):
         st = self.roi_state[t]
         temp_state = st if st is not None else self.default_poly_roi_state(shape_hw)
         box, point = self._prompt_from_roi_state(temp_state, shape_hw)
-        if box is None:
+        if box is None or point is None:
             return "Failed to build ROI prompt."
+
+        if n_points is None:
+            settings = get_medsam2_settings()
+            n_points = int(settings.get("contour_points", 20))
+
+        negative_points = []
+        if self._negative_point_mode:
+            negative_points = [list(pt) for pt in self._negative_points[t]]
+        points_xy = [point] + negative_points
+        point_labels = [1] + [0] * len(negative_points)
 
         self._begin_history_capture("roi", t)
         try:
-            mask = run_medsam2_subprocess(img_u8, box, point)
-            settings = get_medsam2_settings()
-            n_points = int(settings.get("contour_points", 10))
-            pts = mask_to_polygon_points(mask, n_points=n_points)
+            mask = run_medsam2_subprocess(img_u8, box, points_xy, point_labels)
+            pts = mask_to_polygon_points(mask, n_points=int(n_points))
             if not pts:
                 raise RuntimeError("Empty contour from MedSAM2 mask.")
             new_state = polygon_points_to_roi_state(pts, current_state=temp_state, shape_hw=shape_hw)
@@ -2310,7 +2358,10 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def refine_roi_pcmra_phase(self) -> None:
         t = int(self.slider.value()) - 1
-        err = self._refine_pcmra_roi_for_phase(t)
+        n_points = self._prompt_contour_point_count()
+        if n_points is None:
+            return
+        err = self._refine_pcmra_roi_for_phase(t, n_points=n_points)
         if err is not None:
             if "Empty contour" in err:
                 debug_dir = self._medsam2_debug_dir()
@@ -2319,8 +2370,11 @@ class ValveTracker(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "MV tracker", f"MedSAM2 refine failed:\n{err}")
 
     def refine_roi_pcmra_all_phases(self) -> None:
+        n_points = self._prompt_contour_point_count()
+        if n_points is None:
+            return
         progress = QtWidgets.QProgressDialog(
-            "Refining PCMRA ROI with MedSAM2...", "Cancel", 0, self.Nt, self
+            "Refining ROI with MedSAM2...", "Cancel", 0, self.Nt, self
         )
         progress.setWindowModality(QtCore.Qt.WindowModal)
         progress.setMinimumDuration(0)
@@ -2331,7 +2385,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             QtWidgets.QApplication.processEvents()
             if progress.wasCanceled():
                 break
-            err = self._refine_pcmra_roi_for_phase(t)
+            err = self._refine_pcmra_roi_for_phase(t, n_points=n_points)
             if err is not None and err != "ROI is locked.":
                 errors.append(f"Phase {t + 1}: {err}")
 
@@ -2606,6 +2660,49 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_view.getView().setMenuEnabled(menu_enabled)
         self.vel_view.getView().setMenuEnabled(menu_enabled)
 
+    def _on_negative_points_toggle(self, _state: int) -> None:
+        self._set_negative_point_mode(bool(self.chk_negative_points.isChecked()))
+
+    def _set_negative_point_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self._negative_point_mode = enabled
+        self.chk_negative_points.blockSignals(True)
+        try:
+            self.chk_negative_points.setChecked(enabled)
+        finally:
+            self.chk_negative_points.blockSignals(False)
+        if enabled:
+            self.memo.appendPlainText("Negative point mode enabled (click on PCMRA to add points).")
+        else:
+            self.memo.appendPlainText("Negative point mode disabled.")
+        if not self.brush_mode:
+            cursor = QtCore.Qt.CursorShape.CrossCursor if enabled else QtCore.Qt.CursorShape.ArrowCursor
+            self.pcmra_view.getView().setCursor(cursor)
+
+    def _add_negative_point(self, point_xy: np.ndarray, shape_hw: Tuple[int, int]) -> None:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        x = float(np.clip(point_xy[0], 0, shape_hw[1] - 1))
+        y = float(np.clip(point_xy[1], 0, shape_hw[0] - 1))
+        self._negative_points[t].append([x, y])
+        self._update_negative_point_overlay(t)
+        self.memo.appendPlainText(f"Added negative point at ({x:.1f}, {y:.1f}).")
+
+    def _update_negative_point_overlay(self, t: int) -> None:
+        if not hasattr(self, "_negative_point_marker") or self._negative_point_marker is None:
+            return
+        if t < 0 or t >= self.Nt:
+            self._negative_point_marker.setData([], [])
+            return
+        pts = self._negative_points[t]
+        if not pts:
+            self._negative_point_marker.setData([], [])
+            return
+        xs = [pt[0] for pt in pts]
+        ys = [pt[1] for pt in pts]
+        self._negative_point_marker.setData(xs, ys)
+
     def _on_fps_changed(self, value: float):
         self.play_fps = float(value)
         if self.btn_play.isChecked():
@@ -2637,9 +2734,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.brush_mode:
             self._update_brush_cursor()
         else:
-            cursor = QtCore.Qt.CursorShape.ArrowCursor
+            cursor = (
+                QtCore.Qt.CursorShape.CrossCursor
+                if self._negative_point_mode
+                else QtCore.Qt.CursorShape.ArrowCursor
+            )
             self.pcmra_view.getView().setCursor(cursor)
-            self.vel_view.getView().setCursor(cursor)
+            self.vel_view.getView().setCursor(QtCore.Qt.CursorShape.ArrowCursor)
 
     def _update_brush_cursor(self):
         diameter = int(max(6, self.brush_radius * 2))
@@ -2728,6 +2829,25 @@ class ValveTracker(QtWidgets.QMainWindow):
                 return True
 
         if view is not None and event.type() in (QtCore.QEvent.Type.MouseButtonPress, QtCore.QEvent.Type.GraphicsSceneMousePress):
+            if (
+                view == self.pcmra_view.getView()
+                and self._negative_point_mode
+                and not self.brush_mode
+                and event.button() == QtCore.Qt.MouseButton.LeftButton
+            ):
+                img_item = self.pcmra_view.getImageItem()
+                if img_item is None or img_item.image is None:
+                    return True
+                if hasattr(event, "scenePos"):
+                    pos = view.mapSceneToView(event.scenePos())
+                else:
+                    scene_pos = view.mapToScene(event.pos())
+                    pos = view.mapSceneToView(scene_pos)
+                shape = img_item.image.shape
+                if 0 <= pos.x() < shape[1] and 0 <= pos.y() < shape[0]:
+                    self._add_negative_point(np.array([pos.x(), pos.y()], dtype=np.float64), shape)
+                event.accept()
+                return True
             if self.brush_mode and event.button() == QtCore.Qt.MouseButton.LeftButton:
                 t = int(self.slider.value()) - 1
                 self._begin_history_capture("roi", t)
