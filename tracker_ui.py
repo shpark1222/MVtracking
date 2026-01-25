@@ -304,6 +304,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_box.addWidget(self.vel_view, stretch=1)
         self.display_selector.currentTextChanged.connect(self.on_display_changed)
 
+        vel_ctrl = QtWidgets.QGridLayout()
+        vel_ctrl.setContentsMargins(0, 0, 0, 0)
+        vel_ctrl.setHorizontalSpacing(4)
+        vel_ctrl.setVerticalSpacing(4)
+        vel_ctrl.setColumnStretch(0, 1)
+        vel_box.addLayout(vel_ctrl)
+
         self.lock_label_pcm = pg.TextItem("LOCK", color=(255, 60, 60))
         self.lock_label_vel = pg.TextItem("LOCK", color=(255, 60, 60))
         self.lock_label_pcm.setVisible(False)
@@ -459,8 +466,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.stl_mode_selector)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
-        btn_row.addWidget(self.btn_pcmra_gif)
-        btn_row.addWidget(self.btn_vel_gif)
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
