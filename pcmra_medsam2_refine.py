@@ -16,7 +16,7 @@ MEDSAM2_RUNNER = r"C:\Users\show2\MedSAM2\medsam2_infer.py"
 MEDSAM2_CKPT = r"C:\Users\show2\MedSAM2\checkpoints\MedSAM2_latest.pt"
 MEDSAM2_CONFIG = "configs/sam2.1_hiera_t512.yaml"
 MEDSAM2_DEVICE = "cpu"
-DEFAULT_CONTOUR_POINTS = 20
+DEFAULT_CONTOUR_POINTS = 10
 
 DEFAULT_SETTINGS = {
     "python": MEDSAM2_PY,
