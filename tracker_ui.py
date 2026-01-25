@@ -348,6 +348,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             "Kinetic energy": True,
             "Vorticity": True,
         }
+        self.axis_order = "XYZ"
+        self.axis_flips = (False, False, False)
         self._pcmra_levels: Tuple[Optional[float], Optional[float]] = (None, None)
         self._cine_levels: Tuple[Optional[float], Optional[float]] = (None, None)
         self._pcmra_auto_once = True
