@@ -2349,7 +2349,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             settings = get_medsam2_settings()
         except Exception:
             settings = {}
-        default_points = int(settings.get("contour_points", 20))
+        default_points = int(settings.get("contour_points", 10))
         count, ok = QtWidgets.QInputDialog.getInt(
             self,
             "Contour points",
@@ -2381,7 +2381,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         if n_points is None:
             settings = get_medsam2_settings()
-            n_points = int(settings.get("contour_points", 20))
+            n_points = int(settings.get("contour_points", 10))
 
         negative_points = []
         if self._negative_point_mode:
@@ -2971,7 +2971,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._restoring_view or self._updating_image or self._syncing_view:
             return
         view = self._view_for_key(key)
-        img_item = view.getImageItem()
+        img_view = self._image_view_for_key(key)
+        img_item = img_view.getImageItem()
         if img_item is None or img_item.image is None:
             return
         rng = view.viewRange()
