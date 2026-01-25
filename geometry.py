@@ -7,6 +7,34 @@ from scipy.ndimage import map_coordinates
 from mvpack_io import CineGeom, VolGeom
 
 
+def apply_axis_transform(
+    volume: np.ndarray,
+    order: str = "XYZ",
+    flips: Optional[Tuple[bool, bool, bool]] = None,
+) -> np.ndarray:
+    arr = np.asarray(volume)
+    if arr.ndim < 3:
+        return arr
+    if order is None:
+        order = "XYZ"
+    order = str(order).upper()
+    if len(order) != 3 or set(order) != {"X", "Y", "Z"}:
+        raise ValueError(f"Invalid axis order '{order}'. Expected permutation of XYZ.")
+    axis_map = {"X": 0, "Y": 1, "Z": 2}
+    perm = [axis_map[c] for c in order]
+    if perm != [0, 1, 2]:
+        perm = perm + list(range(3, arr.ndim))
+        arr = np.transpose(arr, perm)
+    if flips is None:
+        flips = (False, False, False)
+    if len(flips) < 3:
+        flips = tuple(flips) + (False,) * (3 - len(flips))
+    for axis, do_flip in enumerate(flips[:3]):
+        if do_flip:
+            arr = np.flip(arr, axis=axis)
+    return arr
+
+
 @dataclass
 class DICOMGeometry2D:
     ipp: np.ndarray
