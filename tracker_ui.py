@@ -315,6 +315,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_ctrl.setColumnStretch(0, 1)
         vel_box.addLayout(vel_ctrl)
 
+        self.axis_order = "XYZ"
+        self.axis_flips = (False, False, False)
+
         axis_row = QtWidgets.QHBoxLayout()
         axis_row.addWidget(QtWidgets.QLabel("Axis order"))
         self.axis_order_selector = QtWidgets.QComboBox()
