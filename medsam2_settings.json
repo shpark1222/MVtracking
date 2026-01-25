@@ -7,5 +7,5 @@
   "debug_dir": "C:\\temp\\vt_medsam2_debug",
   "debug_keep": true,
   "force_512": true,
-  "contour_points": 20
+  "contour_points": 10
 }
