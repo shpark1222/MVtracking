@@ -244,7 +244,7 @@ def auto_fov_from_line(line_xy: np.ndarray, cine_geom: CineGeom) -> float:
     length = float(np.hypot(dx, dy))
     if not np.isfinite(length) or length <= 0:
         length = 40.0
-    return float(np.clip(length * 3.0, 150.0, 1000.0))
+    return float(np.clip(length * 3.2, 150.0, 1000.0))
 
 
 def reslice_cine_to_pcmra_grid(
