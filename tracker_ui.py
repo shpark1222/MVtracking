@@ -1080,7 +1080,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             cine_geom = self._get_cine_geom_raw(self.active_cine_key)
             col_vec = cine_geom.iop[:3]
             row_vec = cine_geom.iop[3:6]
-            normal_vec = np.cross(row_vec, col_vec)
+            normal_vec = np.cross(col_vec, row_vec)
             nn = np.linalg.norm(normal_vec)
             normal_vec = normal_vec / (nn if nn > 0 else 1e-12)
             print(
