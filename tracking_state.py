@@ -44,6 +44,8 @@ def save_tracking_state_h5(
     apply_segments: Optional[bool] = None,
     show_segment_labels: Optional[bool] = None,
     flip_flow: Optional[bool] = None,
+    axis_order: Optional[str] = None,
+    axis_flips: Optional[tuple] = None,
 ):
     Nt = len(line_norm)
 
@@ -118,6 +120,10 @@ def save_tracking_state_h5(
             g.attrs["show_segment_labels"] = int(bool(show_segment_labels))
         if flip_flow is not None:
             g.attrs["flip_flow"] = int(bool(flip_flow))
+        if axis_order is not None:
+            g.attrs["axis_order"] = str(axis_order)
+        if axis_flips is not None:
+            g.attrs["axis_flips_json"] = json.dumps(list(axis_flips))
 
 
 def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
@@ -136,6 +142,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         apply_segments = 0
         show_segment_labels = 0
         flip_flow = 0
+        axis_order = "XYZ"
+        axis_flips_json = "[false, false, false]"
         with h5py.File(path, "r") as f:
             if "/state/line_norm" not in f:
                 return None
@@ -191,6 +199,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             apply_segments = f["/state"].attrs.get("apply_segments", apply_segments)
             show_segment_labels = f["/state"].attrs.get("show_segment_labels", show_segment_labels)
             flip_flow = f["/state"].attrs.get("flip_flow", flip_flow)
+            axis_order = f["/state"].attrs.get("axis_order", axis_order)
+            axis_flips_json = f["/state"].attrs.get("axis_flips_json", axis_flips_json)
 
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
         if line_angle is not None:
@@ -286,6 +296,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "apply_segments": int(apply_segments),
             "show_segment_labels": int(show_segment_labels),
             "flip_flow": int(flip_flow),
+            "axis_order": str(axis_order),
+            "axis_flips_json": str(axis_flips_json),
         }
     except Exception:
         return None
