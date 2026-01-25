@@ -117,6 +117,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._undo_stack = []
         self._redo_stack = []
         self._restoring_history = False
+        self._redo_shortcuts = []
 
         cw = QtWidgets.QWidget()
         self.setCentralWidget(cw)
@@ -239,9 +240,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_copy = QtWidgets.QPushButton("Copy ROI")
         self.btn_roi_paste = QtWidgets.QPushButton("Paste ROI")
         self.btn_roi_forward = QtWidgets.QPushButton("Copy ROI forward")
-        pcmra_ctrl.addWidget(self.btn_roi_copy, 0, 0)
-        pcmra_ctrl.addWidget(self.btn_roi_paste, 0, 1)
-        pcmra_ctrl.addWidget(self.btn_roi_forward, 0, 2)
+        self.btn_edit = QtWidgets.QPushButton("Edit ROI: OFF")
+        pcmra_ctrl.addWidget(self.btn_edit, 0, 0)
+        pcmra_ctrl.addWidget(self.btn_roi_copy, 0, 1)
+        pcmra_ctrl.addWidget(self.btn_roi_paste, 0, 2)
+        pcmra_ctrl.addWidget(self.btn_roi_forward, 0, 3)
 
         self.btn_pcmra_gif = QtWidgets.QPushButton("Export PCMRA GIF")
         self.btn_vel_gif = QtWidgets.QPushButton("Export Colormap GIF")
@@ -251,10 +254,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.segment_selector.addItems(["4 segments", "6 segments"])
         self.chk_segment_labels = QtWidgets.QCheckBox("Show R labels")
         self.btn_brush = QtWidgets.QPushButton("Brush ROI: OFF")
-        pcmra_ctrl.addWidget(self.chk_apply_segments, 0, 3)
-        pcmra_ctrl.addWidget(self.segment_selector, 0, 4)
-        pcmra_ctrl.addWidget(self.chk_segment_labels, 0, 5)
-        pcmra_ctrl.addWidget(self.btn_brush, 0, 6)
+        pcmra_ctrl.addWidget(self.chk_apply_segments, 0, 4)
+        pcmra_ctrl.addWidget(self.segment_selector, 0, 5)
+        pcmra_ctrl.addWidget(self.chk_segment_labels, 0, 6)
+        pcmra_ctrl.addWidget(self.btn_brush, 0, 7)
 
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
@@ -263,7 +266,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.chk_negative_points, 1, 0)
         pcmra_ctrl.addWidget(self.btn_refine_roi_phase, 1, 1)
         pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
-        pcmra_ctrl.setColumnStretch(7, 1)
+        pcmra_ctrl.setColumnStretch(8, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
         self._configure_pcmra_refine_widget()
@@ -435,7 +438,6 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.btn_compute = QtWidgets.QPushButton("Compute current")
         self.btn_all = QtWidgets.QPushButton("Compute all")
-        self.btn_edit = QtWidgets.QPushButton("Edit ROI: OFF")
         self.btn_copy = QtWidgets.QPushButton("Copy data")
         self.btn_copy_regional = QtWidgets.QPushButton("Copy regional data")
         self.copy_regional_selector = QtWidgets.QComboBox()
@@ -457,7 +459,6 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         btn_row.addWidget(self.btn_compute)
         btn_row.addWidget(self.btn_all)
-        btn_row.addWidget(self.btn_edit)
         btn_row.addWidget(self.btn_copy)
         btn_row.addWidget(self.btn_copy_regional)
         btn_row.addWidget(self.copy_regional_selector)
@@ -535,6 +536,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         play_action.triggered.connect(lambda: self.toggle_playback(not self.btn_play.isChecked()))
         self.addAction(play_action)
 
+        self._install_redo_shortcuts()
 
         # slider
         self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -1967,6 +1969,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         current = self._snapshot_history_state(entry["kind"], entry["phase"])
         self._undo_stack.append({**entry, "state": current})
         self._apply_history_state(entry)
+
+    def _install_redo_shortcuts(self) -> None:
+        widgets = list(self.cine_views.values()) + [self.pcmra_view, self.vel_view]
+        for widget in widgets:
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), widget)
+            shortcut.setContext(QtCore.Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(self.redo_last_action)
+            self._redo_shortcuts.append(shortcut)
 
     def _compute_metrics(
         self,
