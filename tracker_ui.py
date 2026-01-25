@@ -128,7 +128,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(8)
         layout.setRowStretch(0, 1)
-        layout.setRowStretch(1, 1)
+        layout.setRowStretch(1, 0)
         layout.setRowStretch(2, 0)
         layout.setColumnStretch(0, 1)
 
@@ -318,20 +318,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.axis_order = "XYZ"
         self.axis_flips = (False, False, False)
 
-        axis_row = QtWidgets.QHBoxLayout()
-        axis_row.addWidget(QtWidgets.QLabel("Axis order"))
         self.axis_order_selector = QtWidgets.QComboBox()
         self.axis_order_selector.addItems(["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"])
         self.axis_order_selector.setCurrentText(self.axis_order)
-        axis_row.addWidget(self.axis_order_selector)
         self.chk_axis_flip_x = QtWidgets.QCheckBox("Flip X")
         self.chk_axis_flip_y = QtWidgets.QCheckBox("Flip Y")
         self.chk_axis_flip_z = QtWidgets.QCheckBox("Flip Z")
-        axis_row.addWidget(self.chk_axis_flip_x)
-        axis_row.addWidget(self.chk_axis_flip_y)
-        axis_row.addWidget(self.chk_axis_flip_z)
-        axis_row.addStretch(1)
-        vel_ctrl.addLayout(axis_row, 0, 0, 1, 4)
 
         self.lock_label_pcm = pg.TextItem("LOCK", color=(255, 60, 60))
         self.lock_label_vel = pg.TextItem("LOCK", color=(255, 60, 60))
@@ -384,10 +376,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         top_layout.setColumnStretch(2, 1)
         top_layout.setRowStretch(0, 1)
         top_layout.setRowStretch(1, 0)
-        layout.addWidget(top_area, 0, 0, 1, 1)
-
         bottom_right = QtWidgets.QVBoxLayout()
-        layout.addLayout(bottom_right, 1, 0, 1, 1)
 
         chart_log_row = QtWidgets.QHBoxLayout()
         bottom_right.addLayout(chart_log_row, stretch=1)
@@ -490,6 +479,16 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.btn_cine_gif)
         btn_row.addWidget(self.btn_pcmra_gif)
         btn_row.addWidget(self.btn_vel_gif)
+
+        bottom_widget = QtWidgets.QWidget()
+        bottom_widget.setLayout(bottom_right)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        splitter.addWidget(top_area)
+        splitter.addWidget(bottom_widget)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, 0, 0, 2, 1)
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
@@ -629,6 +628,15 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
         self.spin_line_angle.valueChanged.connect(self.on_line_angle_changed)
+
+        axis_row = QtWidgets.QHBoxLayout()
+        axis_row.addWidget(QtWidgets.QLabel("Axis order"))
+        axis_row.addWidget(self.axis_order_selector)
+        axis_row.addWidget(self.chk_axis_flip_x)
+        axis_row.addWidget(self.chk_axis_flip_y)
+        axis_row.addWidget(self.chk_axis_flip_z)
+        axis_row.addStretch(1)
+        left_box.addLayout(axis_row)
 
         for btn in (
             self.btn_roi_copy,
