@@ -267,7 +267,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
         self._configure_pcmra_refine_widget()
-        pcmra_box.addWidget(self.pcmra_refine_widget, alignment=QtCore.Qt.AlignmentFlag.AlignLeft)
+        self.pcmra_refine_widget.setContentsMargins(0, 0, 0, 0)
 
         self.vel_view = pg.ImageView()
         self.vel_view.ui.roiBtn.hide()
@@ -346,14 +346,21 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_widget = QtWidgets.QWidget()
         vel_widget.setLayout(vel_box)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-        splitter.addWidget(left_widget)
-        splitter.addWidget(pcmra_widget)
-        splitter.addWidget(vel_widget)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 1)
-        layout.addWidget(splitter, 0, 0, 1, 1)
+        top_area = QtWidgets.QWidget()
+        top_layout = QtWidgets.QGridLayout(top_area)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setHorizontalSpacing(8)
+        top_layout.setVerticalSpacing(4)
+        top_layout.addWidget(left_widget, 0, 0)
+        top_layout.addWidget(pcmra_widget, 0, 1)
+        top_layout.addWidget(vel_widget, 0, 2)
+        top_layout.addWidget(self.pcmra_refine_widget, 1, 1, 1, 2)
+        top_layout.setColumnStretch(0, 1)
+        top_layout.setColumnStretch(1, 1)
+        top_layout.setColumnStretch(2, 1)
+        top_layout.setRowStretch(0, 1)
+        top_layout.setRowStretch(1, 0)
+        layout.addWidget(top_area, 0, 0, 1, 1)
 
         bottom_right = QtWidgets.QVBoxLayout()
         layout.addLayout(bottom_right, 1, 0, 1, 1)
@@ -2962,6 +2969,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._restoring_view or self._updating_image or self._syncing_view:
             return
         view = self._view_for_key(key)
+        img_item = view.getImageItem()
+        if img_item is None or img_item.image is None:
+            return
         rng = view.viewRange()
         self._view_ranges[key] = rng
         if key in ("pcmra", "vel"):
