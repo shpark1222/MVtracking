@@ -466,6 +466,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.stl_mode_selector)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
+        btn_row.addWidget(self.btn_pcmra_gif)
+        btn_row.addWidget(self.btn_vel_gif)
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
