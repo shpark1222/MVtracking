@@ -19,6 +19,7 @@ from pcmra_medsam2_refine import (
     run_medsam2_subprocess,
 )
 from geometry import (
+    apply_axis_transform,
     reslice_plane_fixedN,
     cine_line_to_patient_xyz,
     cine_display_mapping,
@@ -314,6 +315,24 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_ctrl.setColumnStretch(0, 1)
         vel_box.addLayout(vel_ctrl)
 
+        self.axis_order = "XYZ"
+        self.axis_flips = (False, False, False)
+
+        axis_row = QtWidgets.QHBoxLayout()
+        axis_row.addWidget(QtWidgets.QLabel("Axis order"))
+        self.axis_order_selector = QtWidgets.QComboBox()
+        self.axis_order_selector.addItems(["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"])
+        self.axis_order_selector.setCurrentText(self.axis_order)
+        axis_row.addWidget(self.axis_order_selector)
+        self.chk_axis_flip_x = QtWidgets.QCheckBox("Flip X")
+        self.chk_axis_flip_y = QtWidgets.QCheckBox("Flip Y")
+        self.chk_axis_flip_z = QtWidgets.QCheckBox("Flip Z")
+        axis_row.addWidget(self.chk_axis_flip_x)
+        axis_row.addWidget(self.chk_axis_flip_y)
+        axis_row.addWidget(self.chk_axis_flip_z)
+        axis_row.addStretch(1)
+        vel_ctrl.addLayout(axis_row, 0, 0, 1, 4)
+
         self.lock_label_pcm = pg.TextItem("LOCK", color=(255, 60, 60))
         self.lock_label_vel = pg.TextItem("LOCK", color=(255, 60, 60))
         self.lock_label_pcm.setVisible(False)
@@ -499,6 +518,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_cine_auto_levels.clicked.connect(self.enable_cine_auto)
         self.level_min.valueChanged.connect(self.on_level_spin_changed)
         self.level_max.valueChanged.connect(self.on_level_spin_changed)
+        self.axis_order_selector.currentTextChanged.connect(self._on_axis_transform_changed)
+        self.chk_axis_flip_x.stateChanged.connect(self._on_axis_transform_changed)
+        self.chk_axis_flip_y.stateChanged.connect(self._on_axis_transform_changed)
+        self.chk_axis_flip_z.stateChanged.connect(self._on_axis_transform_changed)
 
         copy_action = QtGui.QAction(self)
         copy_action.setShortcut(QtGui.QKeySequence.Copy)
@@ -781,6 +804,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         apply_segments = bool(int(st.get("apply_segments", 0)))
         show_segment_labels = bool(int(st.get("show_segment_labels", 0)))
         flip_flow = bool(int(st.get("flip_flow", 0)))
+        axis_order = str(st.get("axis_order", "XYZ"))
+        axis_flips_json = st.get("axis_flips_json", "[false, false, false]")
+        try:
+            axis_flips = json.loads(axis_flips_json)
+        except Exception:
+            axis_flips = [False, False, False]
         self.segment_selector.setCurrentText("6 segments" if segment_count == 6 else "4 segments")
         self.chk_plot_segments.setChecked(plot_segments)
         self.chk_apply_segments.setChecked(apply_segments)
@@ -848,6 +877,26 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._pcmra_auto_once = bool(pcmra_auto_once)
 
         self._sync_level_controls_from_state()
+
+        axis_choices = [self.axis_order_selector.itemText(i) for i in range(self.axis_order_selector.count())]
+        if axis_order not in axis_choices:
+            axis_order = "XYZ"
+        self.axis_order = axis_order
+        self.axis_flips = tuple(bool(val) for val in list(axis_flips)[:3] + [False, False, False])[:3]
+        self.axis_order_selector.blockSignals(True)
+        self.chk_axis_flip_x.blockSignals(True)
+        self.chk_axis_flip_y.blockSignals(True)
+        self.chk_axis_flip_z.blockSignals(True)
+        try:
+            self.axis_order_selector.setCurrentText(self.axis_order)
+            self.chk_axis_flip_x.setChecked(self.axis_flips[0])
+            self.chk_axis_flip_y.setChecked(self.axis_flips[1])
+            self.chk_axis_flip_z.setChecked(self.axis_flips[2])
+        finally:
+            self.axis_order_selector.blockSignals(False)
+            self.chk_axis_flip_x.blockSignals(False)
+            self.chk_axis_flip_y.blockSignals(False)
+            self.chk_axis_flip_z.blockSignals(False)
 
         self.memo.appendPlainText(f"Restored tracking state from: {st_path}")
 
@@ -1215,6 +1264,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.pack.vortmag is not None and self.pack.vortmag.ndim == 4:
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
 
+        if self.axis_order or self.axis_flips:
+            pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
+            vel5d = apply_axis_transform(vel5d, self.axis_order, self.axis_flips)
+            for key, vol in list(extra_scalars.items()):
+                extra_scalars[key] = apply_axis_transform(vol, self.axis_order, self.axis_flips)
+
         Ipcm, Ivelmag, Vn, spmm, extras = reslice_plane_fixedN(
             pcmra3d=pcmra3d,
             vel5d=vel5d,
@@ -1254,6 +1309,20 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._capture_auto_levels_once()
         self._sync_level_controls_from_state()
         self._apply_levels_if_set()
+
+    def _on_axis_transform_changed(self, _value: Optional[int] = None):
+        self.axis_order = self.axis_order_selector.currentText()
+        self.axis_flips = (
+            self.chk_axis_flip_x.isChecked(),
+            self.chk_axis_flip_y.isChecked(),
+            self.chk_axis_flip_z.isChecked(),
+        )
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        self._cur_phase = None
+        self.set_phase(t)
+        self.compute_current(update_only=True)
 
     def _apply_display_colormap(self):
         mode = self.display_selector.currentText()
@@ -3304,6 +3373,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             apply_segments=self.chk_apply_segments.isChecked(),
             show_segment_labels=self.chk_segment_labels.isChecked(),
             flip_flow=self.chk_flip_flow.isChecked(),
+            axis_order=self.axis_order,
+            axis_flips=self.axis_flips,
         )
         self.tracking_path = out_path
         self.memo.appendPlainText(f"Saved tracking state to: {out_path}")
