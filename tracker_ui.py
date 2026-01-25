@@ -370,7 +370,12 @@ class ValveTracker(QtWidgets.QMainWindow):
         top_layout.addWidget(left_widget, 0, 0)
         top_layout.addWidget(pcmra_widget, 0, 1)
         top_layout.addWidget(vel_widget, 0, 2)
+        left_controls_widget = QtWidgets.QWidget()
+        left_controls_layout = QtWidgets.QVBoxLayout(left_controls_widget)
+        left_controls_layout.setContentsMargins(0, 0, 0, 0)
+        left_controls_layout.setSpacing(4)
         top_layout.addWidget(self.pcmra_refine_widget, 1, 1, 1, 2)
+        top_layout.addWidget(left_controls_widget, 1, 0)
         top_layout.setColumnStretch(0, 1)
         top_layout.setColumnStretch(1, 1)
         top_layout.setColumnStretch(2, 1)
@@ -489,6 +494,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
         layout.addWidget(splitter, 0, 0, 2, 1)
+        QtCore.QTimer.singleShot(
+            0, lambda: splitter.setSizes([int(self.height() * 0.7), int(self.height() * 0.3)])
+        )
 
         self.btn_compute.clicked.connect(self.compute_current)
         self.btn_all.clicked.connect(self.compute_all)
@@ -623,7 +631,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_ctrl_row.addWidget(QtWidgets.QLabel("Angle (deg)"))
         line_ctrl_row.addWidget(self.spin_line_angle)
         line_ctrl_row.addStretch(1)
-        left_box.addLayout(line_ctrl_row)
+        left_controls_layout.addLayout(line_ctrl_row)
         self.btn_line_copy.clicked.connect(self.copy_line_state)
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
@@ -636,7 +644,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         axis_row.addWidget(self.chk_axis_flip_y)
         axis_row.addWidget(self.chk_axis_flip_z)
         axis_row.addStretch(1)
-        left_box.addLayout(axis_row)
+        left_controls_layout.addLayout(axis_row)
 
         for btn in (
             self.btn_roi_copy,
