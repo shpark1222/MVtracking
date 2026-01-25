@@ -51,7 +51,7 @@ def _plane_voxel_coords(
 
         col_dir = _unit(iop[0:3])
         row_dir = _unit(iop[3:6])
-        slc_dir = _unit(np.cross(row_dir, col_dir))
+        slc_dir = _unit(np.cross(col_dir, row_dir))
         if ipps.shape[0] >= 2:
             d = ipps[-1] - ipps[0]
             if np.dot(slc_dir, d) < 0:
