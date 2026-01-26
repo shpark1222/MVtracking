@@ -26,7 +26,11 @@ from geometry import (
     make_plane_from_cine_line,
     auto_fov_from_line,
 )
-from stl_conversion import convert_plane_to_stl, write_stl_from_patient_contour
+from stl_conversion import (
+    convert_plane_to_stl,
+    write_stl_from_patient_contour,
+    write_stl_from_patient_contour_extruded,
+)
 from mvpack_io import MVPack, CineGeom, load_mvpack_h5
 from plot_widgets import PlotCanvas, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
@@ -960,6 +964,18 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _get_cine_geom_raw(self, cine_key: str) -> CineGeom:
         return self.pack.cine_planes[cine_key]["geom"]
 
+    def _cine_slice_thickness_mm(self, cine_geom: CineGeom) -> Optional[float]:
+        edges = cine_geom.edges
+        if edges is None:
+            return None
+        edges = np.asarray(edges, dtype=np.float64)
+        if edges.shape[0] < 3 or edges.shape[1] < 3:
+            return None
+        thickness = float(np.linalg.norm(edges[:3, 2]))
+        if not np.isfinite(thickness) or thickness <= 0.0:
+            return None
+        return thickness
+
     def copy_line_state(self):
         t = int(self.slider.value()) - 1
         self._sync_current_phase_state()
@@ -1584,11 +1600,20 @@ class ValveTracker(QtWidgets.QMainWindow):
             if contour_xyz is None or contour_xyz.size == 0:
                 self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
                 return
-            write_stl_from_patient_contour(
-                out_path=out_path,
-                contour_pts_xyz=contour_xyz,
-                output_space="LPS",
-            )
+            thickness_mm = self._cine_slice_thickness_mm(cine_geom)
+            if thickness_mm is None:
+                write_stl_from_patient_contour(
+                    out_path=out_path,
+                    contour_pts_xyz=contour_xyz,
+                    output_space="LPS",
+                )
+            else:
+                write_stl_from_patient_contour_extruded(
+                    out_path=out_path,
+                    contour_pts_xyz=contour_xyz,
+                    thickness_mm=thickness_mm,
+                    output_space="LPS",
+                )
         else:
             convert_plane_to_stl(
                 out_path=out_path,
