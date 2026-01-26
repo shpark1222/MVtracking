@@ -25,6 +25,8 @@ from geometry import (
     cine_display_mapping,
     make_plane_from_cine_line,
     auto_fov_from_line,
+    transform_points_axis_order,
+    transform_vector_components,
 )
 from stl_conversion import (
     convert_plane_to_stl,
@@ -1301,6 +1303,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.axis_order or self.axis_flips:
             pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
             vel5d = apply_axis_transform(vel5d, self.axis_order, self.axis_flips)
+            vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
             for key, vol in list(extra_scalars.items()):
                 extra_scalars[key] = apply_axis_transform(vol, self.axis_order, self.axis_flips)
 
@@ -1600,6 +1603,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             if contour_xyz is None or contour_xyz.size == 0:
                 self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
                 return
+            if self.axis_order or self.axis_flips:
+                contour_xyz = transform_points_axis_order(contour_xyz, self.axis_order, self.axis_flips)
             thickness_mm = self._cine_slice_thickness_mm(cine_geom)
             if thickness_mm is None:
                 write_stl_from_patient_contour(
@@ -1626,6 +1631,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 cine_shape=cine_img_raw.shape,
                 angle_offset_deg=angle_deg,
                 output_space="RAS",
+                axis_order=self.axis_order,
+                axis_flips=self.axis_flips,
             )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
