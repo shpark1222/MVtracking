@@ -5,7 +5,7 @@ from typing import Iterable, Tuple, Optional, Sequence
 import numpy as np
 from scipy.ndimage import binary_closing, binary_fill_holes
 
-from geometry import auto_fov_from_line, make_plane_from_cine_line
+from geometry import auto_fov_from_line, make_plane_from_cine_line, transform_points_axis_order
 from mvpack_io import CineGeom, VolGeom
 from roi_utils import polygon_mask
 
@@ -241,6 +241,58 @@ def _triangulate_contour_fan(contour_pts_xyz: np.ndarray) -> Sequence[Tuple[np.n
     return triangles
 
 
+def _polygon_normal(contour_pts_xyz: np.ndarray) -> Optional[np.ndarray]:
+    contour = np.asarray(contour_pts_xyz, dtype=np.float64)
+    if contour.ndim != 2 or contour.shape[0] < 3 or contour.shape[1] != 3:
+        return None
+    if np.allclose(contour[0], contour[-1]):
+        contour = contour[:-1]
+    if contour.shape[0] < 3:
+        return None
+    normal = np.zeros(3, dtype=np.float64)
+    for idx in range(contour.shape[0]):
+        p0 = contour[idx]
+        p1 = contour[(idx + 1) % contour.shape[0]]
+        normal[0] += (p0[1] - p1[1]) * (p0[2] + p1[2])
+        normal[1] += (p0[2] - p1[2]) * (p0[0] + p1[0])
+        normal[2] += (p0[0] - p1[0]) * (p0[1] + p1[1])
+    norm = np.linalg.norm(normal)
+    if norm < 1e-8:
+        return None
+    return normal / norm
+
+
+def _extrude_contour_triangles(
+    contour_pts_xyz: np.ndarray,
+    thickness_mm: float,
+) -> Sequence[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    contour = np.asarray(contour_pts_xyz, dtype=np.float64)
+    if np.allclose(contour[0], contour[-1]):
+        contour = contour[:-1]
+    if contour.shape[0] < 3:
+        raise ValueError("contour_pts_xyz must include at least 3 unique points")
+    normal = _polygon_normal(contour)
+    if normal is None:
+        return _triangulate_contour_fan(contour)
+    half = 0.5 * thickness_mm
+    top = contour + normal * half
+    bottom = contour - normal * half
+
+    triangles = []
+    triangles.extend(_triangulate_contour_fan(top))
+    triangles.extend(_triangulate_contour_fan(bottom[::-1]))
+
+    for idx in range(contour.shape[0]):
+        nxt = (idx + 1) % contour.shape[0]
+        top0 = top[idx]
+        top1 = top[nxt]
+        bot0 = bottom[idx]
+        bot1 = bottom[nxt]
+        triangles.append((top0, top1, bot1))
+        triangles.append((top0, bot1, bot0))
+    return triangles
+
+
 def write_stl_from_patient_contour(
     out_path: str,
     contour_pts_xyz: Optional[np.ndarray],
@@ -256,6 +308,22 @@ def write_stl_from_patient_contour(
     write_ascii_stl(out_path, triangles_norm, output_space=output_space)
 
 
+def write_stl_from_patient_contour_extruded(
+    out_path: str,
+    contour_pts_xyz: Optional[np.ndarray],
+    thickness_mm: float,
+    output_space: str = "LPS",
+):
+    """Write an STL by extruding a patient-space contour along its normal."""
+    if contour_pts_xyz is None:
+        raise ValueError("contour_pts_xyz is required for extruded STL output")
+    if not np.isfinite(thickness_mm) or thickness_mm <= 0.0:
+        write_stl_from_patient_contour(out_path, contour_pts_xyz, output_space=output_space)
+        return
+    triangles = _extrude_contour_triangles(np.asarray(contour_pts_xyz, dtype=np.float64), thickness_mm)
+    write_ascii_stl(out_path, triangles, output_space=output_space)
+
+
 def convert_plane_to_stl(
     out_path: str,
     vol_geom: VolGeom,
@@ -267,6 +335,8 @@ def convert_plane_to_stl(
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
     output_space: str = "RAS",
+    axis_order: str = "XYZ",
+    axis_flips: Optional[Tuple[bool, bool, bool]] = None,
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
@@ -276,4 +346,11 @@ def convert_plane_to_stl(
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
     )
+    if axis_order or axis_flips:
+        transformed = []
+        for v0, v1, v2 in triangles:
+            verts = np.vstack([v0, v1, v2])
+            verts = transform_points_axis_order(verts, axis_order, axis_flips)
+            transformed.append((verts[0], verts[1], verts[2]))
+        triangles = transformed
     write_ascii_stl(out_path, triangles, output_space=output_space)

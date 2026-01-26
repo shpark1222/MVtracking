@@ -35,6 +35,56 @@ def apply_axis_transform(
     return arr
 
 
+def transform_vector_components(
+    vectors: np.ndarray,
+    order: str = "XYZ",
+    flips: Optional[Tuple[bool, bool, bool]] = None,
+) -> np.ndarray:
+    arr = np.asarray(vectors)
+    if arr.ndim < 4:
+        return arr
+    order = str(order).upper() if order is not None else "XYZ"
+    if len(order) != 3 or set(order) != {"X", "Y", "Z"}:
+        raise ValueError(f"Invalid axis order '{order}'. Expected permutation of XYZ.")
+    axis_map = {"X": 0, "Y": 1, "Z": 2}
+    perm = [axis_map[c] for c in order]
+    comp_axis = 3
+    arr = np.take(arr, perm, axis=comp_axis)
+    if flips is None:
+        flips = (False, False, False)
+    if len(flips) < 3:
+        flips = tuple(flips) + (False,) * (3 - len(flips))
+    for axis, do_flip in enumerate(flips[:3]):
+        if do_flip:
+            if arr.ndim == 4:
+                arr[..., axis] *= -1.0
+            else:
+                arr[..., axis, :] *= -1.0
+    return arr
+
+
+def transform_points_axis_order(
+    points_xyz: np.ndarray,
+    order: str = "XYZ",
+    flips: Optional[Tuple[bool, bool, bool]] = None,
+) -> np.ndarray:
+    pts = np.asarray(points_xyz, dtype=np.float64)
+    if pts.shape[-1] != 3:
+        raise ValueError("points_xyz must have shape (..., 3)")
+    order = str(order).upper() if order is not None else "XYZ"
+    if len(order) != 3 or set(order) != {"X", "Y", "Z"}:
+        raise ValueError(f"Invalid axis order '{order}'. Expected permutation of XYZ.")
+    axis_map = {"X": 0, "Y": 1, "Z": 2}
+    perm = [axis_map[c] for c in order]
+    pts = pts[..., perm]
+    if flips is None:
+        flips = (False, False, False)
+    if len(flips) < 3:
+        flips = tuple(flips) + (False,) * (3 - len(flips))
+    sign = np.array([(-1.0 if flips[i] else 1.0) for i in range(3)], dtype=np.float64)
+    return pts * sign
+
+
 @dataclass
 class DICOMGeometry2D:
     ipp: np.ndarray
