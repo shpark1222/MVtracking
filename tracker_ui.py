@@ -1687,8 +1687,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         )
         fov_half = auto_fov_from_line(line_xy, cine_geom)
         scale = (2.0 * fov_half) / float(self.Npix - 1)
-        uu = (-fov_half + contour_pts[:, 0] * scale).reshape(-1, 1)
-        vv = (-fov_half + contour_pts[:, 1] * scale).reshape(-1, 1)
+        vv = (-fov_half + contour_pts[:, 0] * scale).reshape(-1, 1)
+        uu = (-fov_half + (self.Npix - 1 - contour_pts[:, 1]) * scale).reshape(-1, 1) # SP edited for converting STL
         return c[None, :] + uu * u[None, :] + vv * v[None, :]
 
     def _normalize_image(self, img: np.ndarray, vmin: Optional[float], vmax: Optional[float]) -> np.ndarray:
