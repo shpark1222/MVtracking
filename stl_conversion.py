@@ -5,7 +5,7 @@ from typing import Iterable, Tuple, Optional, Sequence
 import numpy as np
 from scipy.ndimage import binary_closing, binary_fill_holes
 
-from geometry import auto_fov_from_line, make_plane_from_cine_line
+from geometry import auto_fov_from_line, make_plane_from_cine_line, transform_points_axis_order
 from mvpack_io import CineGeom, VolGeom
 from roi_utils import polygon_mask
 
@@ -335,6 +335,8 @@ def convert_plane_to_stl(
     cine_shape: Tuple[int, int] | None = None,
     angle_offset_deg: float = 0.0,
     output_space: str = "RAS",
+    axis_order: str = "XYZ",
+    axis_flips: Optional[Tuple[bool, bool, bool]] = None,
 ):
     triangles = plane_roi_to_triangles(
         cine_geom=cine_geom,
@@ -344,4 +346,11 @@ def convert_plane_to_stl(
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
     )
+    if axis_order or axis_flips:
+        transformed = []
+        for v0, v1, v2 in triangles:
+            verts = np.vstack([v0, v1, v2])
+            verts = transform_points_axis_order(verts, axis_order, axis_flips)
+            transformed.append((verts[0], verts[1], verts[2]))
+        triangles = transformed
     write_ascii_stl(out_path, triangles, output_space=output_space)

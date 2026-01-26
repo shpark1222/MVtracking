@@ -1628,6 +1628,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 cine_shape=cine_img_raw.shape,
                 angle_offset_deg=angle_deg,
                 output_space="RAS",
+                axis_order=self.axis_order,
+                axis_flips=self.axis_flips,
             )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
