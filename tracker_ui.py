@@ -58,6 +58,32 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.work_folder = work_folder
         self.tracking_path = tracking_path
 
+        # ------------------------------------------------------------------
+        # FIX: normalize pcmra/vel axis to (row, col, slice, ...)
+        # If pack was saved as (col, row, slice, ...), transpose once here
+        # so you do NOT need to use YXZ swap later.
+        # ------------------------------------------------------------------
+        try:
+            # pcmra: (X, Y, Z, T) -> (Y, X, Z, T)
+            if pack.pcmra.ndim == 4:
+                pack.pcmra = np.transpose(pack.pcmra, (1, 0, 2, 3))
+
+            # vel: (X, Y, Z, 3, T) -> (Y, X, Z, 3, T)
+            if pack.vel is not None and pack.vel.ndim == 5:
+                pack.vel = np.transpose(pack.vel, (1, 0, 2, 3, 4))
+
+                # swap velocity components too: (vx, vy, vz) -> (vy, vx, vz)
+                pack.vel = pack.vel[:, :, :, [1, 0, 2], :]
+
+            # optional scalar volumes that follow spatial axes
+            if getattr(pack, "ke", None) is not None and pack.ke.ndim == 4:
+                pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
+            if getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
+                pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
+
+        except Exception:
+            pass
+            
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
 
