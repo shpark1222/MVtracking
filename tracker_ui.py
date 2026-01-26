@@ -25,7 +25,6 @@ from geometry import (
     cine_display_mapping,
     make_plane_from_cine_line,
     auto_fov_from_line,
-    transform_points_axis_order,
     transform_vector_components,
 )
 from stl_conversion import (
@@ -1603,8 +1602,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             if contour_xyz is None or contour_xyz.size == 0:
                 self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
                 return
-            if self.axis_order or self.axis_flips:
-                contour_xyz = transform_points_axis_order(contour_xyz, self.axis_order, self.axis_flips)
             thickness_mm = self._cine_slice_thickness_mm(cine_geom)
             if thickness_mm is None:
                 write_stl_from_patient_contour(
