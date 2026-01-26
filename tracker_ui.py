@@ -28,7 +28,6 @@ from geometry import (
     transform_vector_components,
 )
 from stl_conversion import (
-    convert_plane_to_stl,
     write_stl_from_patient_contour,
     write_stl_from_patient_contour_extruded,
 )
@@ -490,17 +489,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.copy_regional_selector.addItems(["Current chart", "All metrics"])
         self.btn_save = QtWidgets.QPushButton("Save to MVtrack.h5")
         self.btn_convert_stl = QtWidgets.QPushButton("Convert STL")
-        self.stl_mode_selector = QtWidgets.QComboBox()
-        self.stl_mode_selector.addItems(
-            [
-                "Cine-based STL",
-                "Patient/PCMRA contour STL",
-            ]
-        )
-        self.stl_mode_selector.setToolTip(
-            "Cine-based: triangulates the cine plane ROI.\n"
-            "Patient/PCMRA: uses the PCMRA ROI contour in patient (LPS) space."
-        )
         self.btn_cine_gif = QtWidgets.QPushButton("Export Cine GIF")
 
         btn_row.addWidget(self.btn_compute)
@@ -510,7 +498,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         btn_row.addWidget(self.copy_regional_selector)
         btn_row.addWidget(self.btn_save)
         btn_row.addStretch(1)
-        btn_row.addWidget(self.stl_mode_selector)
         btn_row.addWidget(self.btn_convert_stl)
         btn_row.addWidget(self.btn_cine_gif)
         btn_row.addWidget(self.btn_pcmra_gif)
@@ -1591,13 +1578,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.line_norm[t] is None:
             self.line_norm[t] = self._default_line_norm()
         line_xy = self._get_active_line_abs_raw(t)
-        roi_abs = self._roi_abs_points_from_item()
-        if roi_abs is not None and len(roi_abs) > 0:
-            roi_abs = roi_abs.copy()
-            roi_abs[:, 1] = (self.Npix - 1) - roi_abs[:, 1]
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
-        vol_shape = self.pack.vel.shape[:3]
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
         out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -1610,62 +1592,42 @@ class ValveTracker(QtWidgets.QMainWindow):
         out_dir = os.path.dirname(out_path)
         if out_dir and not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)
-        stl_mode = self.stl_mode_selector.currentText()
-        if stl_mode.startswith("Patient/PCMRA"):
-            contour_pts = self._roi_contour_points((self.Npix, self.Npix))
-            if contour_pts is None or contour_pts.size == 0:
-                self.memo.appendPlainText("STL save failed: no PCMRA contour available.")
-                return
-            contour_pts = contour_pts.copy()
-            contour_pts[:, 1] = (self.Npix - 1) - contour_pts[:, 1]
-            contour_xyz = self._pcmra_contour_patient_xyz(
-                contour_pts=contour_pts,
-                line_xy=line_xy,
-                cine_geom=cine_geom,
-                cine_shape=cine_img_raw.shape,
-                angle_deg=angle_deg,
-            )
-            if contour_xyz is None or contour_xyz.size == 0:
-                self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
-                return
-            thickness_mm = self._cine_slice_thickness_mm(cine_geom)
-            if thickness_mm is None:
-                write_stl_from_patient_contour(
-                    out_path=out_path,
-                    contour_pts_xyz=contour_xyz,
-                    output_space="LPS",
-                )
-            else:
-                write_stl_from_patient_contour_extruded(
-                    out_path=out_path,
-                    contour_pts_xyz=contour_xyz,
-                    thickness_mm=thickness_mm,
-                    output_space="LPS",
-                )
-        else:
-            convert_plane_to_stl(
+        contour_pts = self._roi_contour_points((self.Npix, self.Npix))
+        if contour_pts is None or contour_pts.size == 0:
+            self.memo.appendPlainText("STL save failed: no PCMRA contour available.")
+            return
+        contour_pts = contour_pts.copy()
+        contour_pts[:, 1] = (self.Npix - 1) - contour_pts[:, 1]
+        contour_xyz = self._pcmra_contour_patient_xyz(
+            contour_pts=contour_pts,
+            line_xy=line_xy,
+            cine_geom=cine_geom,
+            cine_shape=cine_img_raw.shape,
+            angle_deg=angle_deg,
+        )
+        if contour_xyz is None or contour_xyz.size == 0:
+            self.memo.appendPlainText("STL save failed: unable to map contour to patient space.")
+            return
+        thickness_mm = self._cine_slice_thickness_mm(cine_geom)
+        if thickness_mm is None:
+            write_stl_from_patient_contour(
                 out_path=out_path,
-                vol_geom=self.pack.geom,
-                cine_geom=cine_geom,
-                line_xy=line_xy,
-                roi_abs_pts=roi_abs,
-                vol_shape=vol_shape,
-                npix=self.Npix,
-                cine_shape=cine_img_raw.shape,
-                angle_offset_deg=angle_deg,
-                output_space="RAS",
-                axis_order=self.axis_order,
-                axis_flips=self.axis_flips,
+                contour_pts_xyz=contour_xyz,
+                output_space="LPS",
+            )
+        else:
+            write_stl_from_patient_contour_extruded(
+                out_path=out_path,
+                contour_pts_xyz=contour_xyz,
+                thickness_mm=thickness_mm,
+                output_space="LPS",
             )
         if not os.path.exists(out_path):
             self.memo.appendPlainText(f"STL save failed: {out_path}")
             return
-        if stl_mode.startswith("Patient/PCMRA"):
-            self.memo.appendPlainText(
-                f"STL saved: {out_path} (patient/PCMRA contour in LPS; set output_space='RAS' for RAS)."
-            )
-        else:
-            self.memo.appendPlainText(f"STL saved: {out_path} (cine plane ROI in RAS).")
+        self.memo.appendPlainText(
+            f"STL saved: {out_path} (patient/PCMRA contour in LPS; set output_space='RAS' for RAS)."
+        )
 
     def _pcmra_contour_patient_xyz(
         self,
