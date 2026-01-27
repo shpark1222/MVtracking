@@ -11,7 +11,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 CINEMA_PY = r"C:\Users\show2\miniconda3\envs\cinema\python.exe"
-CINEMA_RUNNER = r"C:\Users\show2\CineMA\cinema_infer_mv.py"
+CINEMA_RUNNER = r"D:\github\4DFlow\MVtracking\cinema_infer_mv.py"
 
 DEFAULT_SETTINGS = {
     "python": CINEMA_PY,
