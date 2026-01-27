@@ -11,12 +11,24 @@ import torch
 
 
 def _resolve_convvit_class():
+    import importlib
+
+    try:
+        cinema_pkg = importlib.import_module("cinema")
+        if hasattr(cinema_pkg, "ConvViT"):
+            return cinema_pkg.ConvViT
+    except Exception:
+        pass
+
     module_candidates = [
-        "cinema.models.conv_vit",
-        "cinema.model.conv_vit",
+        "cinema.convvit",
         "cinema.conv_vit",
-        "conv_vit",
+        "cinema.models.convvit",
+        "cinema.models.conv_vit",
+        "cinema.model.convvit",
+        "cinema.model.conv_vit",
     ]
+
     for module_name in module_candidates:
         try:
             mod = importlib.import_module(module_name)
@@ -24,7 +36,11 @@ def _resolve_convvit_class():
             continue
         if hasattr(mod, "ConvViT"):
             return mod.ConvViT
-    raise ImportError("ConvViT class not found in CineMA environment.")
+
+    raise ImportError(
+        "ConvViT class not found. "
+        "Check that CineMA is installed in the selected conda env and that import cinema works."
+    )
 
 
 def _load_input(path: Path) -> Tuple[np.ndarray, str]:
