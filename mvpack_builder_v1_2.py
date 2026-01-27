@@ -285,7 +285,7 @@ class PackBuilder(QtWidgets.QWidget):
 
         self.mr = ""
         self.dcm4d = ""
-        self.cines = []
+        self.cines = {"2ch": "", "3ch": "", "4ch": ""}
 
         self.btn_mr = QtWidgets.QPushButton("Select mrStruct folder")
         self.lbl_mr = QtWidgets.QLabel("mrStruct: -")
@@ -293,8 +293,12 @@ class PackBuilder(QtWidgets.QWidget):
         self.btn_4d = QtWidgets.QPushButton("Select 4D DICOM folder")
         self.lbl_4d = QtWidgets.QLabel("4D DICOM: -")
 
-        self.btn_add_cine = QtWidgets.QPushButton("Add cine folder")
-        self.lst_cine = QtWidgets.QListWidget()
+        self.btn_cine_2ch = QtWidgets.QPushButton("Select 2CH cine folder")
+        self.lbl_cine_2ch = QtWidgets.QLabel("2CH cine: -")
+        self.btn_cine_3ch = QtWidgets.QPushButton("Select 3CH cine folder")
+        self.lbl_cine_3ch = QtWidgets.QLabel("3CH cine: -")
+        self.btn_cine_4ch = QtWidgets.QPushButton("Select 4CH cine folder")
+        self.lbl_cine_4ch = QtWidgets.QLabel("4CH cine: -")
 
         self.btn_build = QtWidgets.QPushButton("Build mvpack.h5")
 
@@ -307,8 +311,12 @@ class PackBuilder(QtWidgets.QWidget):
             self.lbl_mr,
             self.btn_4d,
             self.lbl_4d,
-            self.btn_add_cine,
-            self.lst_cine,
+            self.btn_cine_2ch,
+            self.lbl_cine_2ch,
+            self.btn_cine_3ch,
+            self.lbl_cine_3ch,
+            self.btn_cine_4ch,
+            self.lbl_cine_4ch,
             self.btn_build,
             self.logbox,
         ):
@@ -316,7 +324,9 @@ class PackBuilder(QtWidgets.QWidget):
 
         self.btn_mr.clicked.connect(self.sel_mr)
         self.btn_4d.clicked.connect(self.sel_4d)
-        self.btn_add_cine.clicked.connect(self.add_cine)
+        self.btn_cine_2ch.clicked.connect(lambda: self.set_cine_folder("2ch"))
+        self.btn_cine_3ch.clicked.connect(lambda: self.set_cine_folder("3ch"))
+        self.btn_cine_4ch.clicked.connect(lambda: self.set_cine_folder("4ch"))
         self.btn_build.clicked.connect(self.build)
 
     def log(self, s):
@@ -334,20 +344,24 @@ class PackBuilder(QtWidgets.QWidget):
             self.dcm4d = d
             self.lbl_4d.setText(f"4D DICOM: {d}")
 
-    def add_cine(self):
+    def set_cine_folder(self, tag):
         d = QtWidgets.QFileDialog.getExistingDirectory(self)
         if not d:
             return
-        tag, ok = QtWidgets.QInputDialog.getText(self, "cine tag", "2CH / 3CH / 4CH")
-        if ok:
-            self.cines.append((tag, d))
-            self.lst_cine.addItem(f"{tag}: {d}")
+        self.cines[tag] = d
+        if tag == "2ch":
+            self.lbl_cine_2ch.setText(f"2CH cine: {d}")
+        elif tag == "3ch":
+            self.lbl_cine_3ch.setText(f"3CH cine: {d}")
+        elif tag == "4ch":
+            self.lbl_cine_4ch.setText(f"4CH cine: {d}")
 
     def build(self):
         self.log("=== BUILD START ===")
         self.log(f"mrStruct: {self.mr}")
         self.log(f"4D DICOM: {self.dcm4d}")
-        self.log(f"cine count: {len(self.cines)}")
+        cine_count = sum(1 for folder in self.cines.values() if folder)
+        self.log(f"cine count: {cine_count}")
 
         mag, mag_meta = load_mrstruct(os.path.join(self.mr, "mag_struct.mat"))
         vel, vel_meta = load_mrstruct(os.path.join(self.mr, "vel_struct.mat"))
@@ -430,9 +444,12 @@ class PackBuilder(QtWidgets.QWidget):
             gg.attrs["axis_map_json"] = json.dumps(_to_jsonable(geom["axis_map"]))
 
             gc = f.create_group("cine")
-            for tag, folder in self.cines:
+            for tag in ("2ch", "3ch", "4ch"):
+                folder = self.cines.get(tag, "")
+                if not folder:
+                    continue
                 cine, meta = read_cine(folder, log_fn=self.log)
-                gt = gc.create_group(tag.lower())
+                gt = gc.create_group(tag)
                 gt["cineI"] = cine
                 gt["IPP"] = meta["IPP"]
                 gt["IOP"] = meta["IOP"]
