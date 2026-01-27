@@ -6,13 +6,15 @@ import json
 from pathlib import Path
 from typing import Tuple
 
+import matplotlib
 import numpy as np
 import torch
 
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 
 def _resolve_convvit_class():
-    import importlib
-
     try:
         cinema_pkg = importlib.import_module("cinema")
         if hasattr(cinema_pkg, "ConvViT"):
@@ -66,7 +68,23 @@ def _normalize_view(view: str) -> str:
     raise ValueError(f"Unsupported view: {view}")
 
 
-def run_inference(cine: np.ndarray, view: str) -> dict:
+def _normalize_frame_percentile(frame: np.ndarray, p_lo: float = 1.0, p_hi: float = 99.0) -> np.ndarray:
+    f = np.asarray(frame, dtype=np.float32)
+    lo, hi = np.percentile(f, [p_lo, p_hi])
+    if hi > lo:
+        f = np.clip(f, lo, hi)
+        f = (f - lo) / (hi - lo)
+        return f.astype(np.float32, copy=False)
+    return np.zeros_like(f, dtype=np.float32)
+
+
+def run_inference(
+    cine: np.ndarray,
+    view: str,
+    debug_dir: str | None = None,
+    debug_frame_idx: int = 0,
+    debug_all_frames: bool = False,
+) -> dict:
     view = _normalize_view(view)
     convvit_cls = _resolve_convvit_class()
     model = convvit_cls.from_finetuned(
@@ -75,9 +93,9 @@ def run_inference(cine: np.ndarray, view: str) -> dict:
         config_filename=f"finetuned/landmark_coordinate/{view}/config.yaml",
     )
     model.to("cpu")
+    model = model.float()
     model.eval()
 
-    coords_list = []
     _, H, W = cine.shape
     ALIGN = 16
     pad_h = (ALIGN - (H % ALIGN)) % ALIGN
@@ -86,26 +104,47 @@ def run_inference(cine: np.ndarray, view: str) -> dict:
     Hp = H + pad_h
     Wp = W + pad_w
     scale = np.array([Wp, Hp, Wp, Hp, Wp, Hp], dtype=np.float32)
+
+    coords_list: list[np.ndarray] = []
+
     with torch.no_grad():
         for t in range(cine.shape[0]):
-            frame = cine[t]
+            frame = np.asarray(cine[t], dtype=np.float32)
             if pad_h or pad_w:
                 frame = np.pad(frame, ((0, pad_h), (0, pad_w)), mode="constant")
-            print("frame/tensor HW:", (H, W), "->", frame.shape, "pad:", (pad_h, pad_w))
-            tensor = torch.from_numpy(frame)[None, None, ...]
+            frame = _normalize_frame_percentile(frame, 1.0, 99.0)
+
+            tensor = torch.from_numpy(frame).to(dtype=torch.float32)[None, None, ...]
             coords = model({view: tensor})[0]
             if isinstance(coords, torch.Tensor):
                 coords = coords.detach().cpu().numpy()
             coords = np.asarray(coords, dtype=np.float32).reshape(-1)
             if coords.shape[0] < 6:
                 raise RuntimeError(f"Invalid landmark output shape: {coords.shape}")
+
             coords = coords[:6] * scale
-            coords[0::2] = np.clip(coords[0::2], 0, W - 1)
-            coords[1::2] = np.clip(coords[1::2], 0, H - 1)
+            coords = coords.reshape(3, 2)[:, ::-1].reshape(-1)
+
+            coords[0::2] = np.clip(coords[0::2], 0, Wp - 1)
+            coords[1::2] = np.clip(coords[1::2], 0, Hp - 1)
+
+            if debug_dir is not None and (debug_all_frames or t == debug_frame_idx):
+                outdir = Path(debug_dir)
+                outdir.mkdir(parents=True, exist_ok=True)
+
+                x1, y1, x2, y2, x3, y3 = coords.tolist()
+                plt.figure()
+                plt.imshow(frame, cmap="gray")
+                plt.scatter([x1, x2, x3], [y1, y2, y3], s=60)
+                plt.title(f"{view} t={t} (Hp={Hp}, Wp={Wp})")
+                plt.axis("off")
+                plt.savefig(outdir / f"overlay_{view}_t{t:03d}.png", dpi=150, bbox_inches="tight")
+                plt.close()
+
             coords_list.append(coords)
 
     coords_all = np.stack(coords_list, axis=1)
-    mv_coords = coords_all[2:6, :]
+    mv_coords = coords_all[0:4, :]
     return {
         "view": view,
         "coords": coords_all.tolist(),
@@ -117,10 +156,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--debug_dir", default=None)
+    parser.add_argument("--debug_frame_idx", type=int, default=0)
+    parser.add_argument("--debug_all_frames", action="store_true")
     args = parser.parse_args()
 
     cine, view = _load_input(Path(args.input))
-    output = run_inference(cine, view)
+    output = run_inference(
+        cine,
+        view,
+        debug_dir=args.debug_dir,
+        debug_frame_idx=args.debug_frame_idx,
+        debug_all_frames=args.debug_all_frames,
+    )
+
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(output), encoding="utf-8")
