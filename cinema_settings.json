@@ -1,6 +1,6 @@
 {
   "python": "C:\\Users\\show2\\miniconda3\\envs\\cinema\\python.exe",
-  "runner": "C:\\Users\\show2\\CineMA\\cinema_infer_mv.py",
+  "runner": "D:\\github\\4DFlow\\MVtracking\\cinema_infer_mv.py",
   "debug_dir": "C:\\temp\\vt_cinema_debug",
   "debug_keep": false
 }
