@@ -2,6 +2,7 @@ import importlib
 import importlib.util
 import json
 import os
+import time
 from typing import Dict, Tuple, Optional, List
 
 import numpy as np
@@ -11,6 +12,8 @@ from scipy.ndimage import map_coordinates
 
 _imageio_spec = importlib.util.find_spec("imageio.v2")
 imageio = importlib.import_module("imageio.v2") if _imageio_spec else None
+_torch_spec = importlib.util.find_spec("torch")
+torch = importlib.import_module("torch") if _torch_spec else None
 
 from pcmra_medsam2_refine import (
     get_medsam2_settings,
@@ -138,6 +141,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._negative_points: List[List[List[float]]] = [[] for _ in range(self.Nt)]
         self._negative_point_marker = None
         self.play_fps = 10.0
+        self._cinema_model_cache: Dict[str, object] = {}
         self._play_timer = QtCore.QTimer(self)
         self.line_angle = [0.0] * self.Nt
         self.metrics_seg4 = {}
@@ -661,6 +665,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         axis_row.addWidget(self.chk_axis_flip_x)
         axis_row.addWidget(self.chk_axis_flip_y)
         axis_row.addWidget(self.chk_axis_flip_z)
+        self.btn_cine_inference = QtWidgets.QPushButton("Inference")
+        axis_row.addWidget(self.btn_cine_inference)
         axis_row.addStretch(1)
         left_controls_layout.addLayout(axis_row)
 
@@ -675,10 +681,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_pcmra_gif,
             self.btn_vel_gif,
             self.btn_copy_regional,
+            self.btn_cine_inference,
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
+        self.btn_cine_inference.clicked.connect(self.on_cine_inference)
 
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
         self._play_timer.timeout.connect(self._advance_playback)
@@ -989,6 +997,150 @@ class ValveTracker(QtWidgets.QMainWindow):
         if not np.isfinite(thickness) or thickness <= 0.0:
             return None
         return thickness
+
+    def _resolve_convvit_class(self):
+        env_module = os.environ.get("CINEMA_CONVVIT_MODULE")
+        module_candidates = []
+        if env_module:
+            module_candidates.append(env_module)
+        module_candidates += [
+            "cinema.models.conv_vit",
+            "cinema.model.conv_vit",
+            "cinema.conv_vit",
+            "conv_vit",
+        ]
+        for module_name in module_candidates:
+            if importlib.util.find_spec(module_name):
+                mod = importlib.import_module(module_name)
+                if hasattr(mod, "ConvViT"):
+                    return mod.ConvViT
+        raise RuntimeError(
+            "ConvViT module not found. "
+            "Set CINEMA_CONVVIT_MODULE or install the CineMA model package."
+        )
+
+    def _resolve_cinema_model_paths(self, view: str) -> Tuple[str, str]:
+        model_dir = os.environ.get("CINEMA_MODEL_DIR", os.path.join(self.work_folder, "cinema_models"))
+        model_candidates = []
+        for suffix in ("", "_model", "_weights"):
+            for ext in (".pt", ".pth"):
+                model_candidates.append(os.path.join(model_dir, f"{view}{suffix}{ext}"))
+        config_candidates = []
+        for suffix in ("", "_config"):
+            for ext in (".json", ".yaml", ".yml"):
+                config_candidates.append(os.path.join(model_dir, f"{view}{suffix}{ext}"))
+
+        model_path = next((p for p in model_candidates if os.path.exists(p)), None)
+        config_path = next((p for p in config_candidates if os.path.exists(p)), None)
+        if model_path is None or config_path is None:
+            raise RuntimeError(
+                f"CineMA model files not found for view={view}. "
+                f"Checked model dir: {model_dir}"
+            )
+        return model_path, config_path
+
+    def _get_cinema_model(self, view: str):
+        if view in self._cinema_model_cache:
+            return self._cinema_model_cache[view]
+        if torch is None:
+            self.memo.appendPlainText("[mvtracking] torch not available; cannot run inference.")
+            return None
+        convvit_cls = self._resolve_convvit_class()
+        model_path, config_path = self._resolve_cinema_model_paths(view)
+        model = convvit_cls.from_finetuned(model_filename=model_path, config_filename=config_path)
+        model.to("cpu")
+        model.eval()
+        self._cinema_model_cache[view] = model
+        return model
+
+    def _cinema_normalize_frame(self, frame: np.ndarray) -> np.ndarray:
+        frame = frame.astype(np.float32)
+        vmin = float(np.min(frame))
+        vmax = float(np.max(frame))
+        if vmax > vmin:
+            frame = (frame - vmin) / (vmax - vmin)
+        else:
+            frame = frame * 0.0
+        return frame
+
+    def _run_cinema_inference(self, cine_key: str, view: str) -> Tuple[np.ndarray, np.ndarray, float]:
+        frames = [self._get_cine_frame(cine_key, t) for t in range(self.Nt)]
+        cine_stack = np.stack(frames, axis=0).astype(np.float32)
+        if torch is None:
+            raise RuntimeError("torch is not available.")
+        model = self._get_cinema_model(view)
+        if model is None:
+            raise RuntimeError("CineMA model could not be loaded.")
+
+        coords_list = []
+        start = time.perf_counter()
+        for t in range(cine_stack.shape[0]):
+            frame = self._cinema_normalize_frame(cine_stack[t])
+            batch = torch.from_numpy(frame).float().unsqueeze(0).unsqueeze(0)
+            with torch.no_grad():
+                pred = model(batch)
+            if isinstance(pred, (list, tuple)):
+                pred = pred[0]
+            pred = pred.detach().cpu().numpy().reshape(-1)
+            if pred.shape[0] < 6:
+                raise RuntimeError(f"Invalid landmark output shape: {pred.shape}")
+            pred = pred[:6]
+            H, W = frame.shape
+            pred = pred * np.array([W, H, W, H, W, H], dtype=np.float32)
+            coords_list.append(pred)
+        elapsed = time.perf_counter() - start
+        coords = np.stack(coords_list, axis=-1)
+        return cine_stack, coords, elapsed
+
+    def on_cine_inference(self):
+        cine_key = self.active_cine_key
+        if cine_key not in self.pack.cine_planes:
+            self.memo.appendPlainText("[mvtracking] No cine selected for inference.")
+            return
+        view = "lax_2c" if cine_key == "2ch" else "lax_4c"
+        self.memo.appendPlainText(f"[mvtracking] Inference cine key: {cine_key}")
+        self.memo.appendPlainText(f"[mvtracking] Inference view: {view}")
+        try:
+            cine_stack, coords, elapsed = self._run_cinema_inference(cine_key, view)
+        except Exception as exc:
+            self.memo.appendPlainText(f"[mvtracking] Inference failed: {exc}")
+            return
+
+        T, H, W = cine_stack.shape
+        self.memo.appendPlainText(f"[mvtracking] Input frame shape: ({T}, {H}, {W})")
+        self.memo.appendPlainText(f"[mvtracking] Inference time: {elapsed:.3f}s")
+
+        pts = coords.reshape(3, 2, T)
+        y_mean = np.mean(pts[:, 1, :], axis=1)
+        apex_idx = int(np.argmax(y_mean))
+        hinge_idx = [i for i in range(3) if i != apex_idx]
+        mv_pts = pts[hinge_idx, :, :]
+        mv_pts_t = np.transpose(mv_pts, (2, 0, 1))
+
+        for t in range(T):
+            img_raw = self._get_cine_frame_raw(cine_key, t)
+            H_raw, W_raw = img_raw.shape
+            line_abs = self._canonicalize_line_abs(mv_pts_t[t])
+            self.line_norm[t] = self._abs_to_norm_line(line_abs, H_raw, W_raw)
+
+        cur_t = int(self.slider.value()) - 1
+        if 0 <= cur_t < self.Nt:
+            self.set_phase(cur_t)
+
+        x_min = float(np.min(mv_pts_t[:, :, 0]))
+        x_max = float(np.max(mv_pts_t[:, :, 0]))
+        y_min = float(np.min(mv_pts_t[:, :, 1]))
+        y_max = float(np.max(mv_pts_t[:, :, 1]))
+        self.memo.appendPlainText(f"[mvtracking] MV coord range: x=[{x_min:.1f}, {x_max:.1f}] y=[{y_min:.1f}, {y_max:.1f}]")
+
+        lengths = np.linalg.norm(mv_pts_t[:, 0, :] - mv_pts_t[:, 1, :], axis=1)
+        mean_len = float(np.mean(lengths))
+        std_len = float(np.std(lengths))
+        cv = std_len / max(mean_len, 1e-6)
+        quality = "OK" if cv < 0.3 else "WARN"
+        self.memo.appendPlainText(
+            f"[mvtracking] MV length check: mean={mean_len:.2f} std={std_len:.2f} cv={cv:.2f} => {quality}"
+        )
 
     def copy_line_state(self):
         t = int(self.slider.value()) - 1
