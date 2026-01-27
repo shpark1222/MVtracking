@@ -79,8 +79,10 @@ def run_inference(cine: np.ndarray, view: str) -> dict:
 
     coords_list = []
     _, H, W = cine.shape
-    pad_h = (2 - (H % 2)) % 2
-    pad_w = (2 - (W % 2)) % 2
+    ALIGN = 16
+    pad_h = (ALIGN - (H % ALIGN)) % ALIGN
+    pad_w = (ALIGN - (W % ALIGN)) % ALIGN
+
     Hp = H + pad_h
     Wp = W + pad_w
     scale = np.array([Wp, Hp, Wp, Hp, Wp, Hp], dtype=np.float32)
@@ -89,6 +91,7 @@ def run_inference(cine: np.ndarray, view: str) -> dict:
             frame = cine[t]
             if pad_h or pad_w:
                 frame = np.pad(frame, ((0, pad_h), (0, pad_w)), mode="constant")
+            print("frame/tensor HW:", (H, W), "->", frame.shape, "pad:", (pad_h, pad_w))
             tensor = torch.from_numpy(frame)[None, None, ...]
             coords = model({view: tensor})[0]
             if isinstance(coords, torch.Tensor):
