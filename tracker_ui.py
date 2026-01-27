@@ -737,6 +737,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.pcmra_refine_widget.setToolTip(reason)
 
     def _configure_cinema_inference_widget(self) -> None:
+        if not hasattr(self, "btn_cine_inference"):
+            return
         reason = None
         try:
             settings = get_cinema_settings()
