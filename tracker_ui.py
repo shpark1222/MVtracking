@@ -302,6 +302,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
         self._configure_pcmra_refine_widget()
+        self._configure_cinema_inference_widget()
         self.pcmra_refine_widget.setContentsMargins(0, 0, 0, 0)
 
         self.vel_view = pg.ImageView()
