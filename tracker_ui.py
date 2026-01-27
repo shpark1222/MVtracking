@@ -685,6 +685,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
         self.btn_cine_inference.clicked.connect(self.on_cine_inference)
+        self._configure_cinema_inference_widget()
 
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
         self._play_timer.timeout.connect(self._advance_playback)
