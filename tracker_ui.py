@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import time
+from dataclasses import replace
 from typing import Dict, Tuple, Optional, List
 
 import numpy as np
@@ -1422,6 +1423,66 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.line_norm[t] = self._default_line_norm()
         return self._norm_to_abs_line(self.line_norm[t], H_raw, W_raw)
 
+    def _transform_vol_geom(
+        self,
+        vol_geom,
+        vol_shape: Tuple[int, int, int],
+        axis_order: Optional[str],
+        axis_flips: Optional[Tuple[bool, bool, bool]],
+    ):
+        if not axis_order and not axis_flips:
+            return vol_geom
+        if axis_order is None:
+            axis_order = "XYZ"
+        axis_order = str(axis_order).upper()
+        if len(axis_order) != 3 or set(axis_order) != {"X", "Y", "Z"}:
+            raise ValueError(f"Invalid axis order '{axis_order}'. Expected permutation of XYZ.")
+
+        if axis_flips is None:
+            axis_flips = (False, False, False)
+        if len(axis_flips) < 3:
+            axis_flips = tuple(axis_flips) + (False,) * (3 - len(axis_flips))
+
+        axis_map = {"X": 0, "Y": 1, "Z": 2}
+        perm = [axis_map[c] for c in axis_order]
+        if perm == [0, 1, 2] and not any(axis_flips):
+            return vol_geom
+
+        shape = np.asarray(vol_shape[:3], dtype=np.int64)
+        if shape.size < 3:
+            return vol_geom
+        new_shape = shape[perm]
+
+        M = np.zeros((4, 4), dtype=np.float64)
+        M[3, 3] = 1.0
+        for new_axis, old_axis in enumerate(perm):
+            sign = -1.0 if axis_flips[new_axis] else 1.0
+            M[old_axis, new_axis] = sign
+            if axis_flips[new_axis]:
+                M[old_axis, 3] = float(new_shape[new_axis] - 1)
+
+        new_edges = None
+        if vol_geom.edges is not None:
+            edges = np.asarray(vol_geom.edges, dtype=np.float64)
+            if edges.shape == (3, 4):
+                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+            if edges.shape != (4, 4):
+                raise RuntimeError(f"Invalid volume edges shape: {edges.shape}")
+            new_edges = edges @ M
+
+        new_A = vol_geom.A
+        new_orgn4 = vol_geom.orgn4
+        if new_edges is not None:
+            new_A = new_edges[:3, :3].copy()
+            new_orgn4 = new_edges[:3, 3].copy()
+        elif vol_geom.A is not None and vol_geom.orgn4 is not None:
+            A = np.asarray(vol_geom.A, dtype=np.float64)
+            orgn4 = np.asarray(vol_geom.orgn4, dtype=np.float64).reshape(3)
+            new_A = A @ M[:3, :3]
+            new_orgn4 = orgn4 + A @ M[:3, 3]
+
+        return replace(vol_geom, edges=new_edges, A=new_A, orgn4=new_orgn4)
+
     def reslice_for_phase(self, t: int):
         line_xy = self._get_active_line_abs_raw(t)
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
@@ -1437,16 +1498,18 @@ class ValveTracker(QtWidgets.QMainWindow):
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
 
         if self.axis_order or self.axis_flips:
+            pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
             vel5d = apply_axis_transform(vel5d, self.axis_order, self.axis_flips)
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
             for key, vol in list(extra_scalars.items()):
                 extra_scalars[key] = apply_axis_transform(vol, self.axis_order, self.axis_flips)
 
+        vol_geom = self._transform_vol_geom(self.pack.geom, pcmra3d.shape, self.axis_order, self.axis_flips)
         Ipcm, Ivelmag, Vn, spmm, extras = reslice_plane_fixedN(
             pcmra3d=pcmra3d,
             vel5d=vel5d,
             t=t,
-            vol_geom=self.pack.geom,
+            vol_geom=vol_geom,
             cine_geom=cine_geom,
             line_xy=line_xy,
             cine_shape=img_raw.shape,
