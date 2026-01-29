@@ -149,6 +149,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._line_marker_enabled = False
         self.line_marker_pcm = None
         self.line_marker_vel = None
+        self.line_circle_pcm = None
+        self.line_circle_vel = None
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -2037,6 +2039,14 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             self.vel_view.getView().addItem(self.line_marker_vel)
 
+        if not hasattr(self, "line_circle_pcm") or self.line_circle_pcm is None:
+            self.line_circle_pcm = pg.PlotCurveItem(pen=pg.mkPen((255, 220, 0), width=2))
+            self.pcmra_view.getView().addItem(self.line_circle_pcm)
+
+        if not hasattr(self, "line_circle_vel") or self.line_circle_vel is None:
+            self.line_circle_vel = pg.PlotCurveItem(pen=pg.mkPen((255, 220, 0), width=2))
+            self.vel_view.getView().addItem(self.line_circle_vel)
+
         if not self._segment_label_items_pcm:
             for _ in range(6):
                 item = pg.TextItem("", color="m", anchor=(0.5, 0.5))
@@ -2208,21 +2218,45 @@ class ValveTracker(QtWidgets.QMainWindow):
         return np.column_stack([x_disp, y_disp])
 
     def _update_line_marker_overlay(self, t: int) -> None:
-        if self.line_marker_pcm is None or self.line_marker_vel is None:
+        if (
+            self.line_marker_pcm is None
+            or self.line_marker_vel is None
+            or self.line_circle_pcm is None
+            or self.line_circle_vel is None
+        ):
             return
         if not self._line_marker_enabled:
             self.line_marker_pcm.setData([], [])
             self.line_marker_vel.setData([], [])
+            self.line_circle_pcm.setData([], [])
+            self.line_circle_vel.setData([], [])
             return
         pts = self._line_marker_positions(t)
         if pts is None or len(pts) == 0:
             self.line_marker_pcm.setData([], [])
             self.line_marker_vel.setData([], [])
+            self.line_circle_pcm.setData([], [])
+            self.line_circle_vel.setData([], [])
             return
         xs = pts[:, 0].astype(np.float64)
         ys = pts[:, 1].astype(np.float64)
         self.line_marker_pcm.setData(xs, ys)
         self.line_marker_vel.setData(xs, ys)
+        if len(pts) < 2:
+            self.line_circle_pcm.setData([], [])
+            self.line_circle_vel.setData([], [])
+            return
+        center = (pts[0] + pts[1]) * 0.5
+        radius = 0.5 * float(np.linalg.norm(pts[1] - pts[0]))
+        if not np.isfinite(radius) or radius <= 0.0:
+            self.line_circle_pcm.setData([], [])
+            self.line_circle_vel.setData([], [])
+            return
+        theta = np.linspace(0.0, 2.0 * np.pi, 200)
+        cx = center[0] + radius * np.cos(theta)
+        cy = center[1] + radius * np.sin(theta)
+        self.line_circle_pcm.setData(cx, cy)
+        self.line_circle_vel.setData(cx, cy)
 
     def on_poly_changed_pcm_live(self):
         if self._syncing_poly:
