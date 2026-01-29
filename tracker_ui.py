@@ -2146,23 +2146,25 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_segment_overlay(t)
 
     def on_line_apply(self) -> None:
-        t = int(self.slider.value()) - 1
-        if t < 0 or t >= self.Nt:
+        t_current = int(self.slider.value()) - 1
+        if t_current < 0 or t_current >= self.Nt:
             return
-        self._line_marker_enabled = True
         self.ensure_poly_rois()
-        self._update_line_marker_overlay(t)
-        if self._is_roi_locked(t):
-            return
-        state = self._circle_roi_state_from_line(t)
-        if state is None:
-            return
-        self._begin_history_capture("roi", t)
-        self.roi_state[t] = state
-        self.apply_roi_state_both(state)
-        self.update_spline_overlay(t)
-        self.compute_current(update_only=True)
-        self._commit_history_capture("roi", t)
+        for t in range(self.Nt):
+            if self._is_roi_locked(t):
+                continue
+            state = self._circle_roi_state_from_line(t)
+            if state is None:
+                continue
+            self._begin_history_capture("roi", t)
+            self.roi_state[t] = state
+            if t == t_current:
+                self.apply_roi_state_both(state)
+                self.update_spline_overlay(t)
+                self.compute_current(update_only=True)
+            self._commit_history_capture("roi", t)
+        self._line_marker_enabled = False
+        self._update_line_marker_overlay(t_current)
 
     def _circle_roi_state_from_line(self, t: int) -> Optional[dict]:
         pts = self._line_marker_positions(t)
