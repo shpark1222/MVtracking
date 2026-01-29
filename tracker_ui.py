@@ -145,6 +145,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.metrics_seg6 = {}
         self._segment_label_items_pcm = []
         self._segment_label_items_vel = []
+        self._line_marker_enabled = False
+        self.line_marker_pcm = None
+        self.line_marker_vel = None
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -665,6 +668,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         axis_row.addWidget(self.chk_axis_flip_z)
         self.btn_cine_inference = QtWidgets.QPushButton("Inference")
         axis_row.addWidget(self.btn_cine_inference)
+        self.btn_line_apply = QtWidgets.QPushButton("Apply")
+        axis_row.addWidget(self.btn_line_apply)
         axis_row.addStretch(1)
         left_controls_layout.addLayout(axis_row)
 
@@ -680,11 +685,13 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_vel_gif,
             self.btn_copy_regional,
             self.btn_cine_inference,
+            self.btn_line_apply,
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
         self.btn_cine_inference.clicked.connect(self.on_cine_inference)
+        self.btn_line_apply.clicked.connect(self.on_line_apply)
         self._configure_cinema_inference_widget()
 
         self.pcmra_view.getView().scene().sigMouseClicked.connect(self.on_anchor_pick_pcmra)
@@ -1088,7 +1095,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         cur_t = int(self.slider.value()) - 1
         if 0 <= cur_t < self.Nt:
-            self.set_phase(cur_t)
+            self.set_phase(cur_t, force=True)
 
         x_min = float(np.min(mv_pts_t[:, :, 0]))
         x_max = float(np.max(mv_pts_t[:, :, 0]))
@@ -1249,6 +1256,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.compute_current(update_only=True)
         self._commit_history_capture("line", t)
+        self._update_line_marker_overlay(t)
 
     def _update_cine_roi_visibility(self):
         for k, roi in self.cine_line_rois.items():
@@ -1329,9 +1337,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def set_phase(self, t: int):
+    def set_phase(self, t: int, force: bool = False):
         t = int(np.clip(t, 0, self.Nt - 1))
-        if self._cur_phase == t:
+        if self._cur_phase == t and not force:
             return
         self._cur_phase = t
         self.lbl_phase.setText(f"Phase: {t + 1}")
@@ -1399,6 +1407,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_roi_lock_ui()
         self.set_poly_editable(self.edit_mode and not self._is_roi_locked(t))
         self._update_line_editable(t)
+        self._update_line_marker_overlay(t)
         self._update_lock_label_visibility()
         self._update_lock_label_positions()
         self.plot.set_phase_indicator(t + 1)
@@ -1948,6 +1957,24 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             self.pcmra_view.getView().addItem(self._negative_point_marker)
 
+        if not hasattr(self, "line_marker_pcm") or self.line_marker_pcm is None:
+            self.line_marker_pcm = pg.ScatterPlotItem(
+                size=12,
+                pen=pg.mkPen((255, 220, 0), width=2),
+                brush=pg.mkBrush(0, 0, 0, 0),
+                symbol="o",
+            )
+            self.pcmra_view.getView().addItem(self.line_marker_pcm)
+
+        if not hasattr(self, "line_marker_vel") or self.line_marker_vel is None:
+            self.line_marker_vel = pg.ScatterPlotItem(
+                size=12,
+                pen=pg.mkPen((255, 220, 0), width=2),
+                brush=pg.mkBrush(0, 0, 0, 0),
+                symbol="o",
+            )
+            self.vel_view.getView().addItem(self.line_marker_vel)
+
         if not self._segment_label_items_pcm:
             for _ in range(6):
                 item = pg.TextItem("", color="m", anchor=(0.5, 0.5))
@@ -2045,6 +2072,65 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.spline_curve_pcm.setData(x, y)
         self.spline_curve_vel.setData(x, y)
         self._update_segment_overlay(t)
+
+    def on_line_apply(self) -> None:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        self._line_marker_enabled = True
+        self.ensure_poly_rois()
+        self._update_line_marker_overlay(t)
+
+    def _line_marker_positions(self, t: int) -> Optional[np.ndarray]:
+        if t < 0 or t >= self.Nt:
+            return None
+        if self.line_norm[t] is None:
+            return None
+        line_xy = self._get_active_line_abs_raw(t)
+        if line_xy is None or line_xy.shape != (2, 2):
+            return None
+        cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
+        angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
+        try:
+            pts_xyz = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=img_raw.shape)
+            center, u, v, _ = make_plane_from_cine_line(
+                line_xy,
+                cine_geom,
+                cine_shape=img_raw.shape,
+                angle_offset_deg=angle_deg,
+            )
+        except Exception:
+            return None
+        fov_half = auto_fov_from_line(line_xy, cine_geom)
+        if not np.isfinite(fov_half) or fov_half <= 0.0:
+            return None
+        rel = pts_xyz - center.reshape(1, 3)
+        x_plane = rel @ u
+        y_plane = rel @ v
+        denom = 2.0 * fov_half
+        row = (y_plane + fov_half) / denom * (self.Npix - 1)
+        col = (x_plane + fov_half) / denom * (self.Npix - 1)
+        x_disp = row
+        y_disp = col
+        return np.column_stack([x_disp, y_disp])
+
+    def _update_line_marker_overlay(self, t: int) -> None:
+        if self.line_marker_pcm is None or self.line_marker_vel is None:
+            return
+        if not self._line_marker_enabled:
+            self.line_marker_pcm.setData([], [])
+            self.line_marker_vel.setData([], [])
+            return
+        pts = self._line_marker_positions(t)
+        if pts is None or len(pts) == 0:
+            self.line_marker_pcm.setData([], [])
+            self.line_marker_vel.setData([], [])
+            return
+        xs = pts[:, 0].astype(np.float64)
+        ys = pts[:, 1].astype(np.float64)
+        self.line_marker_pcm.setData(xs, ys)
+        self.line_marker_vel.setData(xs, ys)
 
     def on_poly_changed_pcm_live(self):
         if self._syncing_poly:
