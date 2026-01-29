@@ -2136,12 +2136,42 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_segment_overlay(t)
 
     def on_line_apply(self) -> None:
-        t = int(self.slider.value()) - 1
-        if t < 0 or t >= self.Nt:
+        t_current = int(self.slider.value()) - 1
+        if t_current < 0 or t_current >= self.Nt:
             return
-        self._line_marker_enabled = True
         self.ensure_poly_rois()
-        self._update_line_marker_overlay(t)
+        for t in range(self.Nt):
+            if self._is_roi_locked(t):
+                continue
+            state = self._circle_roi_state_from_line(t)
+            if state is None:
+                continue
+            self._begin_history_capture("roi", t)
+            self.roi_state[t] = state
+            if t == t_current:
+                self.apply_roi_state_both(state)
+                self.update_spline_overlay(t)
+                self.compute_current(update_only=True)
+            self._commit_history_capture("roi", t)
+        self._line_marker_enabled = False
+        self._update_line_marker_overlay(t_current)
+
+    def _circle_roi_state_from_line(self, t: int) -> Optional[dict]:
+        pts = self._line_marker_positions(t)
+        if pts is None or len(pts) < 2:
+            return None
+        center = (pts[0] + pts[1]) * 0.5
+        radius = 0.5 * float(np.linalg.norm(pts[1] - pts[0]))
+        if not np.isfinite(radius) or radius <= 0.0:
+            return None
+        st = self.roi_state[t]
+        if st is None:
+            st = self.default_poly_roi_state((self.Npix, self.Npix))
+        base_pts = st.get("points", [])
+        n_pts = len(base_pts) if base_pts else 5
+        angles = np.linspace(0, 2 * np.pi, n_pts, endpoint=False)
+        pts_rel = np.column_stack([radius * np.cos(angles), radius * np.sin(angles)]).astype(np.float64)
+        return {"pos": (float(center[0]), float(center[1])), "points": pts_rel.tolist(), "closed": True}
 
     def _line_marker_positions(self, t: int) -> Optional[np.ndarray]:
         if t < 0 or t >= self.Nt:
