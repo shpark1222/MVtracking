@@ -430,8 +430,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chart_selector.addItems(
             [
                 "Flow rate (mL/s)",
-                "Peak velocity (m/s)",
-                "Mean velocity (m/s)",
+                "Peak velocity (cm/s)",
+                "Mean velocity (cm/s)",
                 "Kinetic energy (uJ)",
                 "Peak vorticity (1/s)",
                 "Mean vorticity (1/s)",
@@ -462,8 +462,8 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.lbl_phase = QtWidgets.QLabel("Phase: 1")
         self.lbl_Q = QtWidgets.QLabel("Flow rate (mL/s): -")
-        self.lbl_Vpk = QtWidgets.QLabel("Peak velocity (m/s): -")
-        self.lbl_Vmn = QtWidgets.QLabel("Mean velocity (m/s): -")
+        self.lbl_Vpk = QtWidgets.QLabel("Peak velocity (cm/s): -")
+        self.lbl_Vmn = QtWidgets.QLabel("Mean velocity (cm/s): -")
         self.lbl_KE = QtWidgets.QLabel("Kinetic energy (uJ): -")
         self.lbl_VortPk = QtWidgets.QLabel("Peak vorticity (1/s): -")
         self.lbl_VortMn = QtWidgets.QLabel("Mean vorticity (1/s): -")
@@ -1437,7 +1437,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
 
         if self.axis_order or self.axis_flips:
-            pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
             vel5d = apply_axis_transform(vel5d, self.axis_order, self.axis_flips)
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
             for key, vol in list(extra_scalars.items()):
@@ -2310,8 +2309,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             VortMn = np.nan
         else:
             vvals = Ivelmag[mask]
-            Vpk = float(np.nanmax(vvals)) if vvals.size else np.nan
-            Vmn = float(np.nanmean(vvals)) if vvals.size else np.nan
+            Vpk = float(np.nanmax(vvals)) * 100.0 if vvals.size else np.nan
+            Vmn = float(np.nanmean(vvals)) * 100.0 if vvals.size else np.nan
 
             dA_m2 = (spmm * 1e-3) ** 2
             Q_m3s = float(np.nansum(Vn[mask]) * dA_m2)
@@ -2356,8 +2355,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         if ref_angle is not None and center is not None and np.any(mask) and self._show_segments:
             for metric in (
                 "Flow rate (mL/s)",
-                "Peak velocity (m/s)",
-                "Mean velocity (m/s)",
+                "Peak velocity (cm/s)",
+                "Mean velocity (cm/s)",
                 "Kinetic energy (uJ)",
                 "Peak vorticity (1/s)",
                 "Mean vorticity (1/s)",
@@ -2389,8 +2388,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         else:
             for metric in (
                 "Flow rate (mL/s)",
-                "Peak velocity (m/s)",
-                "Mean velocity (m/s)",
+                "Peak velocity (cm/s)",
+                "Mean velocity (cm/s)",
                 "Kinetic energy (uJ)",
                 "Peak vorticity (1/s)",
                 "Mean vorticity (1/s)",
@@ -2433,8 +2432,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self.metrics_VortMn[t] = np.nan
                 for metric in (
                     "Flow rate (mL/s)",
-                    "Peak velocity (m/s)",
-                    "Mean velocity (m/s)",
+                    "Peak velocity (cm/s)",
+                    "Mean velocity (cm/s)",
                     "Kinetic energy (uJ)",
                     "Peak vorticity (1/s)",
                     "Mean vorticity (1/s)",
@@ -2444,8 +2443,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 continue
 
             vvals = Ivelmag[mask]
-            self.metrics_Vpk[t] = float(np.nanmax(vvals)) if vvals.size else np.nan
-            self.metrics_Vmn[t] = float(np.nanmean(vvals)) if vvals.size else np.nan
+            self.metrics_Vpk[t] = float(np.nanmax(vvals)) * 100.0 if vvals.size else np.nan
+            self.metrics_Vmn[t] = float(np.nanmean(vvals)) * 100.0 if vvals.size else np.nan
 
             dA_m2 = (spmm * 1e-3) ** 2
             Q_m3s = float(np.nansum(Vn[mask]) * dA_m2)
@@ -2469,8 +2468,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 center = abs_pts.mean(axis=0)
                 for metric in (
                     "Flow rate (mL/s)",
-                    "Peak velocity (m/s)",
-                    "Mean velocity (m/s)",
+                    "Peak velocity (cm/s)",
+                    "Mean velocity (cm/s)",
                     "Kinetic energy (uJ)",
                     "Peak vorticity (1/s)",
                     "Mean vorticity (1/s)",
@@ -2502,8 +2501,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             else:
                 for metric in (
                     "Flow rate (mL/s)",
-                    "Peak velocity (m/s)",
-                    "Mean velocity (m/s)",
+                    "Peak velocity (cm/s)",
+                    "Mean velocity (cm/s)",
                     "Kinetic energy (uJ)",
                     "Peak vorticity (1/s)",
                     "Mean vorticity (1/s)",
@@ -2516,8 +2515,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 center = abs_pts.mean(axis=0)
                 for metric in (
                     "Flow rate (mL/s)",
-                    "Peak velocity (m/s)",
-                    "Mean velocity (m/s)",
+                    "Peak velocity (cm/s)",
+                    "Mean velocity (cm/s)",
                     "Kinetic energy (uJ)",
                     "Peak vorticity (1/s)",
                     "Mean vorticity (1/s)",
@@ -2549,8 +2548,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             else:
                 for metric in (
                     "Flow rate (mL/s)",
-                    "Peak velocity (m/s)",
-                    "Mean velocity (m/s)",
+                    "Peak velocity (cm/s)",
+                    "Mean velocity (cm/s)",
                     "Kinetic energy (uJ)",
                     "Peak vorticity (1/s)",
                     "Mean vorticity (1/s)",
@@ -2831,10 +2830,10 @@ class ValveTracker(QtWidgets.QMainWindow):
                 dA_m2 = (spmm * 1e-3) ** 2
                 Q_m3s = float(np.nansum(Vn[rr, cc]) * dA_m2)
                 values.append(Q_m3s * 1e6)
-            elif metric == "Peak velocity (m/s)":
-                values.append(float(np.nanmax(Ivelmag[rr, cc])))
-            elif metric == "Mean velocity (m/s)":
-                values.append(float(np.nanmean(Ivelmag[rr, cc])))
+            elif metric == "Peak velocity (cm/s)":
+                values.append(float(np.nanmax(Ivelmag[rr, cc])) * 100.0)
+            elif metric == "Mean velocity (cm/s)":
+                values.append(float(np.nanmean(Ivelmag[rr, cc])) * 100.0)
             elif metric == "Kinetic energy (uJ)":
                 if Ike is None:
                     values.append(np.nan)
@@ -3370,8 +3369,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.lbl_segments.setText(f"Segments R1..: {seg_vals}")
         else:
             self.lbl_segments.setText("Segments: -")
-        self.lbl_Vpk.setText(f"Peak velocity (m/s): {Vpk:.3f}" if np.isfinite(Vpk) else "Peak velocity (m/s): -")
-        self.lbl_Vmn.setText(f"Mean velocity (m/s): {Vmn:.3f}" if np.isfinite(Vmn) else "Mean velocity (m/s): -")
+        self.lbl_Vpk.setText(f"Peak velocity (cm/s): {Vpk:.3f}" if np.isfinite(Vpk) else "Peak velocity (cm/s): -")
+        self.lbl_Vmn.setText(f"Mean velocity (cm/s): {Vmn:.3f}" if np.isfinite(Vmn) else "Mean velocity (cm/s): -")
         self.lbl_KE.setText(f"Kinetic energy (uJ): {KE:.3f}" if np.isfinite(KE) else "Kinetic energy (uJ): -")
         self.lbl_VortPk.setText(
             f"Peak vorticity (1/s): {VortPk:.3f}" if np.isfinite(VortPk) else "Peak vorticity (1/s): -"
@@ -3386,9 +3385,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         flip = -1.0 if self.chk_flip_flow.isChecked() else 1.0
         if label == "Flow rate (mL/s)":
             self.plot.plot_metric(phases, self.metrics_Q * flip, label, "tab:blue")
-        elif label == "Peak velocity (m/s)":
+        elif label == "Peak velocity (cm/s)":
             self.plot.plot_metric(phases, self.metrics_Vpk, label, "tab:orange")
-        elif label == "Mean velocity (m/s)":
+        elif label == "Mean velocity (cm/s)":
             self.plot.plot_metric(phases, self.metrics_Vmn, label, "tab:green")
         elif label == "Kinetic energy (uJ)":
             self.plot.plot_metric(phases, self.metrics_KE, label, "tab:red")
@@ -3618,8 +3617,8 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _metric_labels(self) -> List[str]:
         return [
             "Flow rate (mL/s)",
-            "Peak velocity (m/s)",
-            "Mean velocity (m/s)",
+            "Peak velocity (cm/s)",
+            "Mean velocity (cm/s)",
             "Kinetic energy (uJ)",
             "Peak vorticity (1/s)",
             "Mean vorticity (1/s)",
