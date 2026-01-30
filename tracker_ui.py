@@ -878,6 +878,11 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
 
         mask = np.asarray(mask_data)
+        # Keep mask aligned with velocity/pcmra axis normalization.
+        if mask.ndim == 3:
+            mask = np.transpose(mask, (1, 0, 2))
+        elif mask.ndim == 4:
+            mask = np.transpose(mask, (1, 0, 2, 3))
         if mask.ndim not in (3, 4):
             QtWidgets.QMessageBox.critical(
                 self,
@@ -1379,7 +1384,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     # ============================
     def on_phase_changed(self, v: int):
         self._remember_current_levels(self._current_display_mode)
-        self.set_phase(v - 1)
+        self.set_phase(v - 1, force=True)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Space:
@@ -1478,6 +1483,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.plot.set_phase_indicator(t + 1)
         if self._streamline_window is not None and self._streamline_window.isVisible():
             self._update_streamline_window()
+        self.compute_current(update_only=False)
 
     # ============================
     # Reslice
@@ -1626,7 +1632,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         self._cur_phase = None
         self.set_phase(t)
-        self.compute_current(update_only=True)
 
     def _apply_display_colormap(self):
         mode = self.display_selector.currentText()
@@ -2998,6 +3003,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        if self.axis_order or self.axis_flips:
+            vel_t = transform_vector_components(vel_t, self.axis_order, self.axis_flips)
+        self._streamline_window.axis_order = str(self.axis_order).upper() if self.axis_order else "XYZ"
+        self._streamline_window.axis_flips = (
+            tuple(self.axis_flips) if self.axis_flips is not None else (False, False, False)
+        )
         streamlines = self._compute_streamlines(vel_t, mask)
         self._streamline_window.update_streamlines(streamlines, mask.shape)
 
