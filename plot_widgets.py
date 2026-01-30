@@ -126,15 +126,51 @@ class StreamlineWindow(QtWidgets.QWidget):
         self.axis_order = str(axis_order).upper()
         self.axis_flips = tuple(axis_flips)
         self._line_items = []
+        self._streamlines = []
         self._volume_shape = None
 
-        self.view = gl.GLViewWidget()
-        self.view.opts["distance"] = 200
-        self.view.setBackgroundColor("k")
+        self._build_view()
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.addWidget(self.view)
+
+    def _build_view(self):
+        self.view = gl.GLViewWidget()
+        self.view.opts["distance"] = 200
+        self.view.setBackgroundColor("k")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._ensure_view():
+            self.view.update()
+
+    def _ensure_view(self):
+        needs_rebuild = False
+        if self.view is None:
+            needs_rebuild = True
+        else:
+            context = None
+            try:
+                context = self.view.context()
+            except Exception:
+                context = None
+            if context is None or not context.isValid():
+                needs_rebuild = True
+        if not needs_rebuild:
+            return False
+        layout = self.layout()
+        if self.view is not None:
+            try:
+                self.view.setParent(None)
+            except Exception:
+                pass
+        self._build_view()
+        if layout is not None:
+            layout.addWidget(self.view)
+        if self._streamlines and self._volume_shape is not None:
+            self.update_streamlines(self._streamlines, self._volume_shape)
+        return True
 
     def clear_streamlines(self):
         for item in self._line_items:
@@ -147,10 +183,11 @@ class StreamlineWindow(QtWidgets.QWidget):
     def update_streamlines(self, streamlines, volume_shape):
         self.clear_streamlines()
         self._volume_shape = volume_shape
-        if not streamlines:
+        self._streamlines = list(streamlines) if streamlines is not None else []
+        if not self._streamlines:
             return
         self._update_view_center(volume_shape)
-        for line in streamlines:
+        for line in self._streamlines:
             if line is None or len(line) == 0:
                 continue
             pts = self._transform_points(np.asarray(line, dtype=np.float32), volume_shape)
