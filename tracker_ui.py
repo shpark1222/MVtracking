@@ -1572,9 +1572,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._vel_mask is not None:
             if self._vel_mask.ndim == 4:
                 mask_t = self._vel_mask[:, :, :, t]
-                vel5d[:, :, :, :, t][~mask_t[..., None]] = 0
+                vel5d[:, :, :, :, t] *= mask_t[..., None]
             else:
-                vel5d[~self._vel_mask[..., None, None]] = 0
+                vel5d *= self._vel_mask[..., None, None]
 
         if self.axis_order or self.axis_flips:
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
