@@ -3000,10 +3000,10 @@ class ValveTracker(QtWidgets.QMainWindow):
                 QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
             )
             self._streamline_window.destroyed.connect(self._on_streamline_window_closed)
-        self._update_streamline_window()
         self._streamline_window.show()
         self._streamline_window.raise_()
         self._streamline_window.activateWindow()
+        QtCore.QTimer.singleShot(0, self._update_streamline_window)
 
     def _on_streamline_window_closed(self, _obj=None):
         self._streamline_window = None
