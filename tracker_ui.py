@@ -1501,7 +1501,6 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         if self.axis_order or self.axis_flips:
             pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
-            vel5d = apply_axis_transform(vel5d, self.axis_order, self.axis_flips)
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
             for key, vol in list(extra_scalars.items()):
                 extra_scalars[key] = apply_axis_transform(vol, self.axis_order, self.axis_flips)
