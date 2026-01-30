@@ -33,7 +33,7 @@ from stl_conversion import (
     write_stl_from_patient_contour_extruded,
 )
 from mvpack_io import MVPack, CineGeom, load_mrstruct, load_mvpack_h5
-from plot_widgets import PlotCanvas, StreamlineWindow, _WheelToSliderFilter
+from plot_widgets import PlotCanvas, StreamlineGalleryWindow, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
     mvtrack_path_for_folder,
@@ -153,9 +153,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_marker_vel = None
         self.line_circle_pcm = None
         self.line_circle_vel = None
-        self._streamline_windows = []
-        self._streamline_axis_order = "XYZ"
-        self._streamline_axis_flips = (False, False, False)
+        self._streamline_galleries = []
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -1501,8 +1499,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_lock_label_visibility()
         self._update_lock_label_positions()
         self.plot.set_phase_indicator(t + 1)
-        if self._streamline_windows:
-            self._update_streamline_windows()
+        if self._streamline_galleries:
+            self._update_streamline_galleries()
         self.compute_current(update_only=False)
 
     # ============================
@@ -3109,33 +3107,39 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available. Please load a mask first."
             )
             return
-        if not self._prompt_streamline_axes():
-            return
-        window = StreamlineWindow(
-            axis_order=self._streamline_axis_order,
-            axis_flips=self._streamline_axis_flips,
-        )
-        window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        window.destroyed.connect(lambda _obj=None, w=window: self._on_streamline_window_closed(w))
-        self._streamline_windows.append(window)
-        window.show()
-        window.raise_()
-        window.activateWindow()
-        QtCore.QTimer.singleShot(0, lambda w=window: self._update_streamline_window(w))
+        orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
+        flips = [
+            (False, False, False),
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+            (True, True, False),
+            (True, False, True),
+            (False, True, True),
+            (True, True, True),
+        ]
+        gallery = StreamlineGalleryWindow(orders, flips)
+        gallery.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        gallery.destroyed.connect(lambda _obj=None, g=gallery: self._on_streamline_gallery_closed(g))
+        self._streamline_galleries.append(gallery)
+        gallery.showMaximized()
+        gallery.raise_()
+        gallery.activateWindow()
+        QtCore.QTimer.singleShot(0, lambda g=gallery: self._update_streamline_gallery(g))
 
-    def _on_streamline_window_closed(self, window):
+    def _on_streamline_gallery_closed(self, gallery):
         try:
-            self._streamline_windows.remove(window)
+            self._streamline_galleries.remove(gallery)
         except ValueError:
             pass
 
-    def _update_streamline_windows(self) -> None:
-        for window in list(self._streamline_windows):
-            if window is None or not window.isVisible():
+    def _update_streamline_galleries(self) -> None:
+        for gallery in list(self._streamline_galleries):
+            if gallery is None or not gallery.isVisible():
                 continue
-            self._update_streamline_window(window)
+            self._update_streamline_gallery(gallery)
 
-    def _update_streamline_window(self, window) -> None:
+    def _update_streamline_gallery(self, gallery) -> None:
         t = int(self.slider.value()) - 1
         if t < 0 or t >= self.Nt:
             return
@@ -3145,13 +3149,13 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available for the current phase."
             )
             return
-        vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
-        axis_order = window.axis_order or "XYZ"
-        axis_flips = window.axis_flips or (False, False, False)
-        if axis_order != "XYZ" or any(axis_flips):
-            vel_t = transform_vector_components(vel_t, axis_order, axis_flips)
-        streamlines = self._compute_streamlines(vel_t, mask)
-        window.update_streamlines(streamlines, mask.shape)
+        base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        for window, axis_order, axis_flips in gallery.views:
+            vel_t = base_vel
+            if axis_order != "XYZ" or any(axis_flips):
+                vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+            streamlines = self._compute_streamlines(vel_t, mask)
+            window.update_streamlines(streamlines, mask.shape)
 
     def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
         if self._vel_mask is None:
