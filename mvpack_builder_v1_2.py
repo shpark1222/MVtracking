@@ -4,11 +4,11 @@ import json
 import numpy as np
 import h5py
 
-from scipy.io import loadmat
 from scipy.ndimage import median_filter
 from PySide6 import QtWidgets
 import pydicom
 
+from mvpack_io import load_mrstruct
 
 # ============================
 # helpers
@@ -109,22 +109,6 @@ def _to_jsonable(x):
     if isinstance(x, dict):
         return {k: _to_jsonable(v) for k, v in x.items()}
     return x
-
-
-# ============================
-# IO
-# ============================
-
-def load_mrstruct(path):
-    md = loadmat(path, squeeze_me=True, struct_as_record=False)
-    ms = md["mrStruct"]
-    edges = getattr(ms, "edges", None)
-    vox = getattr(ms, "vox", None)
-    meta = {
-        "edges": np.array(edges) if edges is not None else None,
-        "vox": np.array(vox) if vox is not None else None,
-    }
-    return np.array(ms.dataAy), meta
 
 
 def read_dicom_sorted(folder):

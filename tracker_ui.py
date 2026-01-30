@@ -32,7 +32,7 @@ from stl_conversion import (
     write_stl_from_patient_contour,
     write_stl_from_patient_contour_extruded,
 )
-from mvpack_io import MVPack, CineGeom, load_mvpack_h5
+from mvpack_io import MVPack, CineGeom, load_mrstruct, load_mvpack_h5
 from plot_widgets import PlotCanvas, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
@@ -83,6 +83,9 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         except Exception:
             pass
+
+        self._vel_raw = self.pack.vel
+        self._vel_mask = None
             
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
@@ -174,8 +177,12 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         left_box = QtWidgets.QVBoxLayout()
 
+        load_row = QtWidgets.QHBoxLayout()
         self.btn_load_mvpack = QtWidgets.QPushButton("Load mvpack")
-        left_box.addWidget(self.btn_load_mvpack)
+        self.btn_load_mask = QtWidgets.QPushButton("Load mask")
+        load_row.addWidget(self.btn_load_mvpack, stretch=3)
+        load_row.addWidget(self.btn_load_mask, stretch=1)
+        left_box.addLayout(load_row)
 
         self.cine_selector = QtWidgets.QComboBox()
         left_box.addWidget(self.cine_selector)
@@ -692,6 +699,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
         self.btn_load_mvpack.clicked.connect(self.on_load_mvpack)
+        self.btn_load_mask.clicked.connect(self.on_load_mask)
         self.btn_cine_inference.clicked.connect(self.on_cine_inference)
         self.btn_line_apply.clicked.connect(self.on_line_apply)
         self._configure_cinema_inference_widget()
@@ -846,6 +854,57 @@ class ValveTracker(QtWidgets.QMainWindow):
         new_window.show()
         self._child_windows.append(new_window)
         self.close()
+
+    def on_load_mask(self):
+        if self._vel_raw is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before loading a mask.")
+            return
+        mask_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select mrStruct mask",
+            self.work_folder,
+            "MAT Files (*.mat);;All Files (*)",
+        )
+        if not mask_path:
+            return
+        try:
+            mask_data, _ = load_mrstruct(mask_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "MV tracker", f"Failed to load mask:\n{exc}")
+            return
+
+        mask = np.asarray(mask_data)
+        if mask.ndim not in (3, 4):
+            QtWidgets.QMessageBox.critical(
+                self,
+                "MV tracker",
+                f"Mask must be 3D or 4D (with phase). Got shape={mask.shape}.",
+            )
+            return
+        if mask.shape[:3] != self._vel_raw.shape[:3]:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "MV tracker",
+                "Mask shape mismatch.\n"
+                f"mask={mask.shape[:3]} vel={self._vel_raw.shape[:3]}",
+            )
+            return
+        if mask.ndim == 4 and mask.shape[3] != self.Nt:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "MV tracker",
+                f"Mask phase mismatch. mask Nt={mask.shape[3]} vel Nt={self.Nt}",
+            )
+            return
+
+        self._vel_mask = mask != 0
+        if self._cur_phase is not None:
+            t = int(self._cur_phase)
+        else:
+            t = int(self.slider.value()) - 1
+        if 0 <= t < self.Nt:
+            self._cur_phase = None
+            self.set_phase(t)
 
     def try_restore_state(self):
         st_path = self.tracking_path or mvtrack_path_for_folder(self.work_folder)
@@ -1487,7 +1546,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     def reslice_for_phase(self, t: int):
         line_xy = self._get_active_line_abs_raw(t)
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
-        vel5d = self.pack.vel.astype(np.float32)
+        vel5d = self._vel_raw.astype(np.float32).copy()
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
@@ -1497,6 +1556,13 @@ class ValveTracker(QtWidgets.QMainWindow):
             extra_scalars["ke"] = self.pack.ke[:, :, :, t].astype(np.float32)
         if self.pack.vortmag is not None and self.pack.vortmag.ndim == 4:
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
+
+        if self._vel_mask is not None:
+            if self._vel_mask.ndim == 4:
+                mask_t = self._vel_mask[:, :, :, t]
+                vel5d[:, :, :, :, t][~mask_t[..., None]] = 0
+            else:
+                vel5d[~self._vel_mask[..., None, None]] = 0
 
         if self.axis_order or self.axis_flips:
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
