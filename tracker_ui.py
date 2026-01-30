@@ -2506,6 +2506,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         spmm: float,
         Ike: Optional[np.ndarray],
         Ivort: Optional[np.ndarray],
+        extras: Optional[Dict[str, np.ndarray]],
     ):
         abs_pts = self._roi_abs_points_from_item()
         abs_pts = closed_spline_xy(abs_pts, n_out=400)
@@ -2529,8 +2530,25 @@ class ValveTracker(QtWidgets.QMainWindow):
             Vpk = float(np.nanmax(vvals)) * 100.0 if vvals.size else np.nan
             Vmn = float(np.nanmean(vvals)) * 100.0 if vvals.size else np.nan
 
+            plane_n = None
+            vx = None
+            vy = None
+            vz = None
+            if isinstance(extras, dict):
+                plane_n = extras.get("plane_n")
+                vx = extras.get("vx")
+                vy = extras.get("vy")
+                vz = extras.get("vz")
+
+            contour_xy = self._roi_contour_points((self.Npix, self.Npix))
+            if plane_n is not None and contour_xy is not None and vx is not None and vy is not None and vz is not None:
+                n_surface = self._surface_normal_from_contour(plane_n, contour_xy)
+                Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+            else:
+                Vn_surface = Vn
+
             dA_m2 = (spmm * 1e-3) ** 2
-            Q_m3s = float(np.nansum(Vn[mask]) * dA_m2)
+            Q_m3s = float(np.nansum(Vn_surface[mask]) * dA_m2)
             Q = Q_m3s * 1e6
 
             if Ike is not None:
@@ -2566,7 +2584,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         Ike = extras.get("ke")
         Ivort = extras.get("vortmag")
 
-        Q, Vpk, Vmn, KE, VortPk, VortMn = self._compute_metrics(Ivelmag, Vn, spmm, Ike, Ivort)
+        Q, Vpk, Vmn, KE, VortPk, VortMn = self._compute_metrics(Ivelmag, Vn, spmm, Ike, Ivort, extras)
         mask, center = self._roi_mask_and_center(Ivelmag.shape)
         ref_angle = self._segment_ref_angle[t] if 0 <= t < self.Nt else None
         if ref_angle is not None and center is not None and np.any(mask) and self._show_segments:
@@ -2663,8 +2681,20 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.metrics_Vpk[t] = float(np.nanmax(vvals)) * 100.0 if vvals.size else np.nan
             self.metrics_Vmn[t] = float(np.nanmean(vvals)) * 100.0 if vvals.size else np.nan
 
+            plane_n = extras.get("plane_n") if isinstance(extras, dict) else None
+            vx = extras.get("vx") if isinstance(extras, dict) else None
+            vy = extras.get("vy") if isinstance(extras, dict) else None
+            vz = extras.get("vz") if isinstance(extras, dict) else None
+
+            contour_xy = self._roi_contour_points((self.Npix, self.Npix), t=t)
+            if plane_n is not None and contour_xy is not None and vx is not None and vy is not None and vz is not None:
+                n_surface = self._surface_normal_from_contour(plane_n, contour_xy)
+                Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+            else:
+                Vn_surface = Vn
+
             dA_m2 = (spmm * 1e-3) ** 2
-            Q_m3s = float(np.nansum(Vn[mask]) * dA_m2)
+            Q_m3s = float(np.nansum(Vn_surface[mask]) * dA_m2)
             self.metrics_Q[t] = Q_m3s * 1e6
 
             if Ike is not None:
@@ -2814,8 +2844,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         center = abs_pts.mean(axis=0) if abs_pts.size else None
         return mask, center
 
-    def _roi_contour_points(self, shape_hw: Tuple[int, int]) -> Optional[np.ndarray]:
-        t = int(self.slider.value()) - 1
+    def _roi_contour_points(self, shape_hw: Tuple[int, int], t: Optional[int] = None) -> Optional[np.ndarray]:
+        if t is None:
+            t = int(self.slider.value()) - 1
         if t < 0 or t >= self.Nt:
             return None
         st = self.roi_state[t]
@@ -2830,6 +2861,45 @@ class ValveTracker(QtWidgets.QMainWindow):
         abs_pts[:, 0] = np.clip(abs_pts[:, 0], 0, W - 1)
         abs_pts[:, 1] = np.clip(abs_pts[:, 1], 0, H - 1)
         return abs_pts
+
+    def _polygon_signed_area_xy(self, pts_xy: np.ndarray) -> float:
+        """
+        Signed area in Cartesian coordinates.
+        pts_xy: (N,2) in image coords (x right, y down).
+        Convert to Cartesian by flipping y: y_cart = -y_img.
+        area > 0 => CCW in Cartesian
+        """
+        if pts_xy is None or pts_xy.ndim != 2 or pts_xy.shape[0] < 3:
+            return 0.0
+        x = pts_xy[:, 0].astype(np.float64)
+        y = (-pts_xy[:, 1]).astype(np.float64)
+        return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+    def _surface_normal_from_contour(self, plane_n: np.ndarray, contour_xy: np.ndarray) -> np.ndarray:
+        """
+        Enforce right-hand rule consistency using contour connectivity.
+        If contour is CW (negative signed area), flip normal.
+        Then enforce temporal consistency using a stored reference normal.
+        """
+        n = np.asarray(plane_n, dtype=np.float64).copy()
+        a = self._polygon_signed_area_xy(contour_xy)
+        if a < 0:
+            n *= -1.0
+
+        if not hasattr(self, "_n_surface_ref") or self._n_surface_ref is None:
+            self._n_surface_ref = n.copy()
+        else:
+            if float(np.dot(n, self._n_surface_ref)) < 0:
+                n *= -1.0
+
+        if not hasattr(self, "_debug_n_surface_count"):
+            self._debug_n_surface_count = 0
+        if self._debug_n_surface_count < 5:
+            print(
+                f"[DEBUG] n_surface={n}, dot_to_ref={float(np.dot(n, self._n_surface_ref)):.3f}"
+            )
+            self._debug_n_surface_count += 1
+        return n
 
     def _normalize_uint8(self, image: np.ndarray) -> np.ndarray:
         if image.dtype == np.uint8:
