@@ -3045,6 +3045,59 @@ class ValveTracker(QtWidgets.QMainWindow):
                 msg += f"\n... and {len(errors) - 10} more."
             QtWidgets.QMessageBox.warning(self, "MV tracker", msg)
 
+    def _prompt_streamline_axes(self) -> bool:
+        orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
+        flip_options = [
+            ("None", (False, False, False)),
+            ("Flip X", (True, False, False)),
+            ("Flip Y", (False, True, False)),
+            ("Flip Z", (False, False, True)),
+            ("Flip X,Y", (True, True, False)),
+            ("Flip X,Z", (True, False, True)),
+            ("Flip Y,Z", (False, True, True)),
+            ("Flip X,Y,Z", (True, True, True)),
+        ]
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Streamline axis settings")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        order_combo = QtWidgets.QComboBox(dialog)
+        order_combo.addItems(orders)
+        if self._streamline_axis_order in orders:
+            order_combo.setCurrentText(self._streamline_axis_order)
+        form.addRow("Axis order", order_combo)
+
+        flip_combo = QtWidgets.QComboBox(dialog)
+        for label, _value in flip_options:
+            flip_combo.addItem(label)
+        try:
+            idx = [opt[1] for opt in flip_options].index(self._streamline_axis_flips)
+            flip_combo.setCurrentIndex(idx)
+        except ValueError:
+            flip_combo.setCurrentIndex(0)
+        form.addRow("Axis flips", flip_combo)
+
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.addStretch(1)
+        ok_btn = QtWidgets.QPushButton("OK")
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        button_row.addWidget(ok_btn)
+        button_row.addWidget(cancel_btn)
+        layout.addLayout(button_row)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+
+        self._streamline_axis_order = order_combo.currentText()
+        self._streamline_axis_flips = flip_options[flip_combo.currentIndex()][1]
+        return True
+
     def on_view_streamline(self) -> None:
         if self._vel_raw is None:
             QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before viewing streamlines.")
