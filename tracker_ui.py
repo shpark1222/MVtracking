@@ -21,7 +21,6 @@ from pcmra_medsam2_refine import (
 )
 from cinema_subprocess import get_cinema_settings, run_cinema_subprocess
 from geometry import (
-    apply_axis_transform,
     reslice_plane_fixedN,
     cine_line_to_patient_xyz,
     cine_display_mapping,
@@ -1500,12 +1499,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
 
         if self.axis_order or self.axis_flips:
-            pcmra3d = apply_axis_transform(pcmra3d, self.axis_order, self.axis_flips)
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
-            for key, vol in list(extra_scalars.items()):
-                extra_scalars[key] = apply_axis_transform(vol, self.axis_order, self.axis_flips)
 
-        vol_geom = self._transform_vol_geom(self.pack.geom, pcmra3d.shape, self.axis_order, self.axis_flips)
+        vol_geom = self.pack.geom
         Ipcm, Ivelmag, Vn, spmm, extras = reslice_plane_fixedN(
             pcmra3d=pcmra3d,
             vel5d=vel5d,
