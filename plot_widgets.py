@@ -5,6 +5,7 @@ import pyqtgraph.opengl as gl
 import matplotlib
 
 matplotlib.use("QtAgg")
+from matplotlib import cm
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
@@ -191,9 +192,10 @@ class StreamlineWindow(QtWidgets.QWidget):
             if line is None or len(line) == 0:
                 continue
             pts = self._transform_points(np.asarray(line, dtype=np.float32), volume_shape)
+            colors = self._streamline_colors(pts.shape[0])
             item = gl.GLLinePlotItem(
                 pos=pts,
-                color=(0.2, 0.8, 1.0, 0.9),
+                color=colors,
                 width=1.0,
                 antialias=True,
                 mode="line_strip",
@@ -220,6 +222,15 @@ class StreamlineWindow(QtWidgets.QWidget):
         axis_map = {"X": 0, "Y": 1, "Z": 2}
         perm = [axis_map[c] for c in self.axis_order]
         return xyz[:, perm]
+
+    def _streamline_colors(self, count: int) -> np.ndarray:
+        if count <= 1:
+            return np.array([[0.0, 0.0, 0.5, 0.9]], dtype=np.float32)
+        positions = np.linspace(0.0, 1.0, count, dtype=np.float32)
+        cmap = cm.get_cmap("jet")
+        colors = cmap(positions)
+        colors[:, 3] = 0.9
+        return colors.astype(np.float32)
 
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
