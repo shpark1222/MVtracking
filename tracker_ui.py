@@ -3107,17 +3107,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available. Please load a mask first."
             )
             return
-        orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
-        flips = [
-            (False, False, False),
-            (True, False, False),
-            (False, True, False),
-            (False, False, True),
-            (True, True, False),
-            (True, False, True),
-            (False, True, True),
-            (True, True, True),
-        ]
+        orders = ["XYZ"]
+        flips = [(False, False, False)]
         gallery = StreamlineGalleryWindow(orders, flips)
         gallery.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         gallery.destroyed.connect(lambda _obj=None, g=gallery: self._on_streamline_gallery_closed(g))
