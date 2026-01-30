@@ -115,7 +115,28 @@ class _WheelToSliderFilter(QtCore.QObject):
         return False
 
 
+class SyncableGLViewWidget(gl.GLViewWidget):
+    cameraChanged = QtCore.Signal()
+
+    def _emit_camera_changed(self):
+        self.cameraChanged.emit()
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        self._emit_camera_changed()
+
+    def wheelEvent(self, ev):
+        super().wheelEvent(ev)
+        self._emit_camera_changed()
+
+    def keyReleaseEvent(self, ev):
+        super().keyReleaseEvent(ev)
+        self._emit_camera_changed()
+
+
 class StreamlineWindow(QtWidgets.QWidget):
+    camera_changed = QtCore.Signal(object)
+
     def __init__(
         self,
         axis_order: str = "XYZ",
@@ -129,6 +150,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._line_items = []
         self._streamlines = []
         self._volume_shape = None
+        self._suppress_camera_signal = False
 
         self._build_view()
 
@@ -137,9 +159,10 @@ class StreamlineWindow(QtWidgets.QWidget):
         layout.addWidget(self.view)
 
     def _build_view(self):
-        self.view = gl.GLViewWidget()
+        self.view = SyncableGLViewWidget()
         self.view.opts["distance"] = 200
         self.view.setBackgroundColor("k")
+        self.view.cameraChanged.connect(self._on_view_camera_changed)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -172,6 +195,36 @@ class StreamlineWindow(QtWidgets.QWidget):
         if self._streamlines and self._volume_shape is not None:
             self.update_streamlines(self._streamlines, self._volume_shape)
         return True
+
+    def _on_view_camera_changed(self):
+        if self._suppress_camera_signal:
+            return
+        state = self.camera_state()
+        if state is None:
+            return
+        if hasattr(self, "camera_changed"):
+            try:
+                self.camera_changed.emit(state)
+            except Exception:
+                pass
+
+    def camera_state(self):
+        if self.view is None:
+            return None
+        keys = ["center", "distance", "azimuth", "elevation", "fov"]
+        return {key: self.view.opts.get(key) for key in keys if key in self.view.opts}
+
+    def set_camera_state(self, state):
+        if self.view is None or state is None:
+            return
+        self._suppress_camera_signal = True
+        try:
+            for key, value in state.items():
+                if key in self.view.opts:
+                    self.view.opts[key] = value
+            self.view.update()
+        finally:
+            self._suppress_camera_signal = False
 
     def clear_streamlines(self):
         for item in self._line_items:
@@ -268,6 +321,7 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.setWindowTitle("Streamline Gallery")
         self.views = []
+        self._syncing_camera = False
 
         scroll = QtWidgets.QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -287,6 +341,9 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
                 label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 view = StreamlineWindow(axis_order=order, axis_flips=flips, parent=panel)
                 view.setMinimumSize(240, 240)
+                view.camera_changed.connect(
+                    lambda state, source=view: self._sync_camera(source, state)
+                )
                 panel_layout.addWidget(label)
                 panel_layout.addWidget(view)
                 grid.addWidget(panel, row, col)
@@ -299,3 +356,15 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         scroll.setWidget(container)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(scroll)
+
+    def _sync_camera(self, source_view, state):
+        if self._syncing_camera:
+            return
+        self._syncing_camera = True
+        try:
+            for view, _order, _flips in self.views:
+                if view is source_view:
+                    continue
+                view.set_camera_state(state)
+        finally:
+            self._syncing_camera = False
