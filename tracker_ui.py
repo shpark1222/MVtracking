@@ -153,7 +153,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_marker_vel = None
         self.line_circle_pcm = None
         self.line_circle_vel = None
-        self._streamline_window = None
+        self._streamline_windows = []
         self._streamline_axis_order = "XYZ"
         self._streamline_axis_flips = (False, False, False)
         self._history_active = None
@@ -1501,8 +1501,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_lock_label_visibility()
         self._update_lock_label_positions()
         self.plot.set_phase_indicator(t + 1)
-        if self._streamline_window is not None and self._streamline_window.isVisible():
-            self._update_streamline_window()
+        if self._streamline_windows:
+            self._update_streamline_windows()
         self.compute_current(update_only=False)
 
     # ============================
@@ -3111,26 +3111,31 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         if not self._prompt_streamline_axes():
             return
-        if self._streamline_window is None:
-            self._streamline_window = StreamlineWindow(
-                axis_order=self._streamline_axis_order,
-                axis_flips=self._streamline_axis_flips,
-            )
-            self._streamline_window.setAttribute(
-                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
-            )
-            self._streamline_window.destroyed.connect(self._on_streamline_window_closed)
-        self._streamline_window.show()
-        self._streamline_window.raise_()
-        self._streamline_window.activateWindow()
-        QtCore.QTimer.singleShot(0, self._update_streamline_window)
+        window = StreamlineWindow(
+            axis_order=self._streamline_axis_order,
+            axis_flips=self._streamline_axis_flips,
+        )
+        window.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        window.destroyed.connect(lambda _obj=None, w=window: self._on_streamline_window_closed(w))
+        self._streamline_windows.append(window)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        QtCore.QTimer.singleShot(0, lambda w=window: self._update_streamline_window(w))
 
-    def _on_streamline_window_closed(self, _obj=None):
-        self._streamline_window = None
+    def _on_streamline_window_closed(self, window):
+        try:
+            self._streamline_windows.remove(window)
+        except ValueError:
+            pass
 
-    def _update_streamline_window(self) -> None:
-        if self._streamline_window is None:
-            return
+    def _update_streamline_windows(self) -> None:
+        for window in list(self._streamline_windows):
+            if window is None or not window.isVisible():
+                continue
+            self._update_streamline_window(window)
+
+    def _update_streamline_window(self, window) -> None:
         t = int(self.slider.value()) - 1
         if t < 0 or t >= self.Nt:
             return
@@ -3141,14 +3146,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
-        axis_order = self._streamline_axis_order or "XYZ"
-        axis_flips = self._streamline_axis_flips or (False, False, False)
+        axis_order = window.axis_order or "XYZ"
+        axis_flips = window.axis_flips or (False, False, False)
         if axis_order != "XYZ" or any(axis_flips):
             vel_t = transform_vector_components(vel_t, axis_order, axis_flips)
-        self._streamline_window.axis_order = axis_order
-        self._streamline_window.axis_flips = axis_flips
         streamlines = self._compute_streamlines(vel_t, mask)
-        self._streamline_window.update_streamlines(streamlines, mask.shape)
+        window.update_streamlines(streamlines, mask.shape)
 
     def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
         if self._vel_mask is None:
