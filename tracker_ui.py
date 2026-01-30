@@ -2892,13 +2892,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             if float(np.dot(n, self._n_surface_ref)) < 0:
                 n *= -1.0
 
-        if not hasattr(self, "_debug_n_surface_count"):
-            self._debug_n_surface_count = 0
-        if self._debug_n_surface_count < 5:
-            print(
-                f"[DEBUG] n_surface={n}, dot_to_ref={float(np.dot(n, self._n_surface_ref)):.3f}"
-            )
-            self._debug_n_surface_count += 1
         return n
 
     def _normalize_uint8(self, image: np.ndarray) -> np.ndarray:
@@ -3061,6 +3054,9 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available. Please load a mask first."
             )
             return
+        if self._streamline_window is not None and not self._streamline_window.isVisible():
+            self._streamline_window.close()
+            self._streamline_window = None
         if self._streamline_window is None:
             self._streamline_window = StreamlineWindow(
                 axis_order=self.axis_order,
