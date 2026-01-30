@@ -1,5 +1,6 @@
 import numpy as np
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtWidgets, QtGui
+import pyqtgraph.opengl as gl
 
 import matplotlib
 
@@ -111,3 +112,74 @@ class _WheelToSliderFilter(QtCore.QObject):
             event.accept()
             return True
         return False
+
+
+class StreamlineWindow(QtWidgets.QWidget):
+    def __init__(
+        self,
+        axis_order: str = "XYZ",
+        axis_flips: tuple = (False, False, False),
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Streamline View")
+        self.axis_order = str(axis_order).upper()
+        self.axis_flips = tuple(axis_flips)
+        self._line_items = []
+        self._volume_shape = None
+
+        self.view = gl.GLViewWidget()
+        self.view.opts["distance"] = 200
+        self.view.setBackgroundColor("k")
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.view)
+
+    def clear_streamlines(self):
+        for item in self._line_items:
+            try:
+                self.view.removeItem(item)
+            except Exception:
+                pass
+        self._line_items = []
+
+    def update_streamlines(self, streamlines, volume_shape):
+        self.clear_streamlines()
+        self._volume_shape = volume_shape
+        if not streamlines:
+            return
+        self._update_view_center(volume_shape)
+        for line in streamlines:
+            if line is None or len(line) == 0:
+                continue
+            pts = self._transform_points(np.asarray(line, dtype=np.float32), volume_shape)
+            item = gl.GLLinePlotItem(
+                pos=pts,
+                color=(0.2, 0.8, 1.0, 0.9),
+                width=1.0,
+                antialias=True,
+                mode="line_strip",
+            )
+            self.view.addItem(item)
+            self._line_items.append(item)
+
+    def _update_view_center(self, volume_shape):
+        if volume_shape is None:
+            return
+        shape_xyz = np.array([volume_shape[1], volume_shape[0], volume_shape[2]], dtype=float)
+        center = shape_xyz / 2.0
+        self.view.opts["center"] = QtGui.QVector3D(float(center[0]), float(center[1]), float(center[2]))
+
+    def _transform_points(self, points: np.ndarray, volume_shape):
+        if points.size == 0:
+            return points
+        xyz = points[:, [1, 0, 2]].astype(np.float32)
+        shape_xyz = np.array([volume_shape[1], volume_shape[0], volume_shape[2]], dtype=np.float32)
+        flips = self.axis_flips if self.axis_flips is not None else (False, False, False)
+        for axis, flip in enumerate(flips[:3]):
+            if flip:
+                xyz[:, axis] = (shape_xyz[axis] - 1.0) - xyz[:, axis]
+        axis_map = {"X": 0, "Y": 1, "Z": 2}
+        perm = [axis_map[c] for c in self.axis_order]
+        return xyz[:, perm]
