@@ -6,6 +6,7 @@ from typing import Dict, Optional, Tuple
 
 import h5py
 import numpy as np
+from scipy.io import loadmat
 
 
 @dataclass
@@ -39,6 +40,18 @@ class MVPack:
     geom: VolGeom
     ke: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
     vortmag: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
+
+
+def load_mrstruct(path: str) -> Tuple[np.ndarray, Dict[str, Optional[np.ndarray]]]:
+    md = loadmat(path, squeeze_me=True, struct_as_record=False)
+    ms = md["mrStruct"]
+    edges = getattr(ms, "edges", None)
+    vox = getattr(ms, "vox", None)
+    meta = {
+        "edges": np.array(edges) if edges is not None else None,
+        "vox": np.array(vox) if vox is not None else None,
+    }
+    return np.array(ms.dataAy), meta
 
 
 def _read_ds(f: h5py.File, path: str) -> np.ndarray:
