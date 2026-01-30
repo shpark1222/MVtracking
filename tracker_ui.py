@@ -154,6 +154,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_circle_pcm = None
         self.line_circle_vel = None
         self._streamline_window = None
+        self._streamline_axis_order = "XYZ"
+        self._streamline_axis_flips = (False, False, False)
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -2892,13 +2894,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             if float(np.dot(n, self._n_surface_ref)) < 0:
                 n *= -1.0
 
-        if not hasattr(self, "_debug_n_surface_count"):
-            self._debug_n_surface_count = 0
-        if self._debug_n_surface_count < 5:
-            print(
-                f"[DEBUG] n_surface={n}, dot_to_ref={float(np.dot(n, self._n_surface_ref)):.3f}"
-            )
-            self._debug_n_surface_count += 1
         return n
 
     def _normalize_uint8(self, image: np.ndarray) -> np.ndarray:
@@ -3052,6 +3047,59 @@ class ValveTracker(QtWidgets.QMainWindow):
                 msg += f"\n... and {len(errors) - 10} more."
             QtWidgets.QMessageBox.warning(self, "MV tracker", msg)
 
+    def _prompt_streamline_axes(self) -> bool:
+        orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
+        flip_options = [
+            ("None", (False, False, False)),
+            ("Flip X", (True, False, False)),
+            ("Flip Y", (False, True, False)),
+            ("Flip Z", (False, False, True)),
+            ("Flip X,Y", (True, True, False)),
+            ("Flip X,Z", (True, False, True)),
+            ("Flip Y,Z", (False, True, True)),
+            ("Flip X,Y,Z", (True, True, True)),
+        ]
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Streamline axis settings")
+        layout = QtWidgets.QVBoxLayout(dialog)
+        form = QtWidgets.QFormLayout()
+        layout.addLayout(form)
+
+        order_combo = QtWidgets.QComboBox(dialog)
+        order_combo.addItems(orders)
+        if self._streamline_axis_order in orders:
+            order_combo.setCurrentText(self._streamline_axis_order)
+        form.addRow("Axis order", order_combo)
+
+        flip_combo = QtWidgets.QComboBox(dialog)
+        for label, _value in flip_options:
+            flip_combo.addItem(label)
+        try:
+            idx = [opt[1] for opt in flip_options].index(self._streamline_axis_flips)
+            flip_combo.setCurrentIndex(idx)
+        except ValueError:
+            flip_combo.setCurrentIndex(0)
+        form.addRow("Axis flips", flip_combo)
+
+        button_row = QtWidgets.QHBoxLayout()
+        button_row.addStretch(1)
+        ok_btn = QtWidgets.QPushButton("OK")
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+        button_row.addWidget(ok_btn)
+        button_row.addWidget(cancel_btn)
+        layout.addLayout(button_row)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+
+        self._streamline_axis_order = order_combo.currentText()
+        self._streamline_axis_flips = flip_options[flip_combo.currentIndex()][1]
+        return True
+
     def on_view_streamline(self) -> None:
         if self._vel_raw is None:
             QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before viewing streamlines.")
@@ -3061,10 +3109,12 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available. Please load a mask first."
             )
             return
+        if not self._prompt_streamline_axes():
+            return
         if self._streamline_window is None:
             self._streamline_window = StreamlineWindow(
-                axis_order=self.axis_order,
-                axis_flips=self.axis_flips,
+                axis_order=self._streamline_axis_order,
+                axis_flips=self._streamline_axis_flips,
             )
             self._streamline_window.setAttribute(
                 QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
@@ -3091,12 +3141,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
-        if self.axis_order or self.axis_flips:
-            vel_t = transform_vector_components(vel_t, self.axis_order, self.axis_flips)
-        self._streamline_window.axis_order = str(self.axis_order).upper() if self.axis_order else "XYZ"
-        self._streamline_window.axis_flips = (
-            tuple(self.axis_flips) if self.axis_flips is not None else (False, False, False)
-        )
+        axis_order = self._streamline_axis_order or "XYZ"
+        axis_flips = self._streamline_axis_flips or (False, False, False)
+        if axis_order != "XYZ" or any(axis_flips):
+            vel_t = transform_vector_components(vel_t, axis_order, axis_flips)
+        self._streamline_window.axis_order = axis_order
+        self._streamline_window.axis_flips = axis_flips
         streamlines = self._compute_streamlines(vel_t, mask)
         self._streamline_window.update_streamlines(streamlines, mask.shape)
 
