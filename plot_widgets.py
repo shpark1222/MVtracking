@@ -220,3 +220,41 @@ class StreamlineWindow(QtWidgets.QWidget):
         axis_map = {"X": 0, "Y": 1, "Z": 2}
         perm = [axis_map[c] for c in self.axis_order]
         return xyz[:, perm]
+
+
+class StreamlineGalleryWindow(QtWidgets.QWidget):
+    def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
+        super().__init__(parent)
+        self.setWindowTitle("Streamline Gallery")
+        self.views = []
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        container = QtWidgets.QWidget()
+        grid = QtWidgets.QGridLayout(container)
+        grid.setContentsMargins(8, 8, 8, 8)
+        grid.setSpacing(8)
+
+        row = 0
+        col = 0
+        for order in axis_orders:
+            for flips in axis_flips:
+                panel = QtWidgets.QWidget()
+                panel_layout = QtWidgets.QVBoxLayout(panel)
+                panel_layout.setContentsMargins(4, 4, 4, 4)
+                label = QtWidgets.QLabel(f"{order} | flips={flips}")
+                label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+                view = StreamlineWindow(axis_order=order, axis_flips=flips, parent=panel)
+                view.setMinimumSize(240, 240)
+                panel_layout.addWidget(label)
+                panel_layout.addWidget(view)
+                grid.addWidget(panel, row, col)
+                self.views.append((view, order, flips))
+                col += 1
+                if col >= columns:
+                    col = 0
+                    row += 1
+
+        scroll.setWidget(container)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(scroll)
