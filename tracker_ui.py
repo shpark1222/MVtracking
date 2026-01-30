@@ -306,6 +306,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
         self.btn_view_streamline = QtWidgets.QPushButton("View streamline")
+        self.btn_clear_mask = QtWidgets.QPushButton("Clear mask")
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
@@ -313,7 +314,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.btn_refine_roi_phase, 1, 1)
         pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
         pcmra_ctrl.addWidget(self.btn_view_streamline, 1, 3)
-        pcmra_ctrl.setColumnStretch(8, 1)
+        pcmra_ctrl.addWidget(self.btn_clear_mask, 1, 4)
+        pcmra_ctrl.setColumnStretch(9, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
         self._configure_pcmra_refine_widget()
@@ -544,6 +546,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_refine_roi_phase.clicked.connect(self.refine_roi_pcmra_phase)
         self.btn_refine_roi_all.clicked.connect(self.refine_roi_pcmra_all_phases)
         self.btn_view_streamline.clicked.connect(self.on_view_streamline)
+        self.btn_clear_mask.clicked.connect(self.on_clear_mask)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
@@ -907,6 +910,21 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
 
         self._vel_mask = mask != 0
+        if self._cur_phase is not None:
+            t = int(self._cur_phase)
+        else:
+            t = int(self.slider.value()) - 1
+        if 0 <= t < self.Nt:
+            self._cur_phase = None
+            self.set_phase(t)
+
+    def on_clear_mask(self):
+        if self._vel_raw is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before clearing a mask.")
+            return
+        if self._vel_mask is None:
+            return
+        self._vel_mask = None
         if self._cur_phase is not None:
             t = int(self._cur_phase)
         else:
