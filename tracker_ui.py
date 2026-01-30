@@ -1483,6 +1483,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.plot.set_phase_indicator(t + 1)
         if self._streamline_window is not None and self._streamline_window.isVisible():
             self._update_streamline_window()
+        self.compute_current(update_only=False)
 
     # ============================
     # Reslice
@@ -1631,7 +1632,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         self._cur_phase = None
         self.set_phase(t)
-        self.compute_current(update_only=True)
 
     def _apply_display_colormap(self):
         mode = self.display_selector.currentText()
@@ -3003,6 +3003,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        if self.axis_order or self.axis_flips:
+            vel_t = transform_vector_components(vel_t, self.axis_order, self.axis_flips)
+        self._streamline_window.axis_order = str(self.axis_order).upper() if self.axis_order else "XYZ"
+        self._streamline_window.axis_flips = (
+            tuple(self.axis_flips) if self.axis_flips is not None else (False, False, False)
+        )
         streamlines = self._compute_streamlines(vel_t, mask)
         self._streamline_window.update_streamlines(streamlines, mask.shape)
 
