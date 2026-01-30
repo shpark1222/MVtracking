@@ -33,7 +33,7 @@ from stl_conversion import (
     write_stl_from_patient_contour_extruded,
 )
 from mvpack_io import MVPack, CineGeom, load_mrstruct, load_mvpack_h5
-from plot_widgets import PlotCanvas, _WheelToSliderFilter
+from plot_widgets import PlotCanvas, StreamlineWindow, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
     mvtrack_path_for_folder,
@@ -153,6 +153,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_marker_vel = None
         self.line_circle_pcm = None
         self.line_circle_vel = None
+        self._streamline_window = None
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -304,12 +305,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.btn_brush, 0, 7)
 
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
+        self.btn_view_streamline = QtWidgets.QPushButton("View streamline")
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
         pcmra_ctrl.addWidget(self.chk_negative_points, 1, 0)
         pcmra_ctrl.addWidget(self.btn_refine_roi_phase, 1, 1)
-        pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
+        pcmra_ctrl.addWidget(self.btn_view_streamline, 1, 2)
+        pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 3)
         pcmra_ctrl.setColumnStretch(8, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
@@ -540,6 +543,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_roi_forward.clicked.connect(self.copy_roi_forward)
         self.btn_refine_roi_phase.clicked.connect(self.refine_roi_pcmra_phase)
         self.btn_refine_roi_all.clicked.connect(self.refine_roi_pcmra_all_phases)
+        self.btn_view_streamline.clicked.connect(self.on_view_streamline)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
@@ -1472,6 +1476,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_lock_label_visibility()
         self._update_lock_label_positions()
         self.plot.set_phase_indicator(t + 1)
+        if self._streamline_window is not None and self._streamline_window.isVisible():
+            self._update_streamline_window()
 
     # ============================
     # Reslice
@@ -2952,6 +2958,137 @@ class ValveTracker(QtWidgets.QMainWindow):
             if len(errors) > 10:
                 msg += f"\n... and {len(errors) - 10} more."
             QtWidgets.QMessageBox.warning(self, "MV tracker", msg)
+
+    def on_view_streamline(self) -> None:
+        if self._vel_raw is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before viewing streamlines.")
+            return
+        if self._vel_mask is None or not np.any(self._vel_mask):
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No mask is available. Please load a mask first."
+            )
+            return
+        if self._streamline_window is None:
+            self._streamline_window = StreamlineWindow(
+                axis_order=self.axis_order,
+                axis_flips=self.axis_flips,
+            )
+            self._streamline_window.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True
+            )
+            self._streamline_window.destroyed.connect(self._on_streamline_window_closed)
+        self._update_streamline_window()
+        self._streamline_window.show()
+        self._streamline_window.raise_()
+        self._streamline_window.activateWindow()
+
+    def _on_streamline_window_closed(self, _obj=None):
+        self._streamline_window = None
+
+    def _update_streamline_window(self) -> None:
+        if self._streamline_window is None:
+            return
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        mask = self._current_vel_mask(t)
+        if mask is None or not np.any(mask):
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No mask is available for the current phase."
+            )
+            return
+        vel_t = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        streamlines = self._compute_streamlines(vel_t, mask)
+        self._streamline_window.update_streamlines(streamlines, mask.shape)
+
+    def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
+        if self._vel_mask is None:
+            return None
+        if self._vel_mask.ndim == 4:
+            return self._vel_mask[:, :, :, t]
+        return self._vel_mask
+
+    def _compute_streamlines(self, vel_t: np.ndarray, mask: np.ndarray) -> List[np.ndarray]:
+        max_seeds = 200
+        step_size = 0.6
+        max_steps = 200
+        min_steps = 20
+
+        seed_points = np.argwhere(mask)
+        if seed_points.size == 0:
+            return []
+        if seed_points.shape[0] > max_seeds:
+            idx = np.random.choice(seed_points.shape[0], size=max_seeds, replace=False)
+            seed_points = seed_points[idx]
+
+        streamlines = []
+        for seed in seed_points:
+            line = self._integrate_streamline(vel_t, mask, seed.astype(np.float32), step_size, max_steps)
+            if line is not None and line.shape[0] >= min_steps:
+                streamlines.append(line)
+        return streamlines
+
+    def _integrate_streamline(
+        self,
+        vel_t: np.ndarray,
+        mask: np.ndarray,
+        seed: np.ndarray,
+        step_size: float,
+        max_steps: int,
+    ) -> Optional[np.ndarray]:
+        forward = self._trace_streamline_direction(vel_t, mask, seed, step_size, max_steps, 1.0)
+        backward = self._trace_streamline_direction(vel_t, mask, seed, step_size, max_steps, -1.0)
+        if backward is not None and len(backward) > 0:
+            backward = backward[::-1]
+            if forward is not None and len(forward) > 0:
+                return np.vstack([backward[:-1], forward])
+            return backward
+        return forward
+
+    def _trace_streamline_direction(
+        self,
+        vel_t: np.ndarray,
+        mask: np.ndarray,
+        seed: np.ndarray,
+        step_size: float,
+        max_steps: int,
+        direction: float,
+    ) -> Optional[np.ndarray]:
+        points = [seed.copy()]
+        pos = seed.astype(np.float32)
+        for _ in range(max_steps):
+            vel = self._sample_velocity_at(vel_t, pos)
+            if not np.all(np.isfinite(vel)):
+                break
+            speed = float(np.linalg.norm(vel))
+            if speed < 1e-6:
+                break
+            step = direction * step_size * vel / speed
+            pos = pos + step
+            if not self._point_in_mask(pos, mask):
+                break
+            points.append(pos.copy())
+        if len(points) <= 1:
+            return None
+        return np.vstack(points)
+
+    def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
+        coords = np.array([[pos[0]], [pos[1]], [pos[2]]], dtype=np.float32)
+        values = [
+            map_coordinates(vel_t[:, :, :, comp], coords, order=1, mode="nearest")[0]
+            for comp in range(3)
+        ]
+        return np.array(values, dtype=np.float32)
+
+    def _point_in_mask(self, pos: np.ndarray, mask: np.ndarray) -> bool:
+        iy = int(round(float(pos[0])))
+        ix = int(round(float(pos[1])))
+        iz = int(round(float(pos[2])))
+        if iy < 0 or ix < 0 or iz < 0:
+            return False
+        if iy >= mask.shape[0] or ix >= mask.shape[1] or iz >= mask.shape[2]:
+            return False
+        return bool(mask[iy, ix, iz])
 
     def _segment_flow_values(
         self,
