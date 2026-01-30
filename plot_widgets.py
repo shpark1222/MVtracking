@@ -115,7 +115,28 @@ class _WheelToSliderFilter(QtCore.QObject):
         return False
 
 
+class SyncableGLViewWidget(gl.GLViewWidget):
+    cameraChanged = QtCore.Signal()
+
+    def _emit_camera_changed(self):
+        self.cameraChanged.emit()
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        self._emit_camera_changed()
+
+    def wheelEvent(self, ev):
+        super().wheelEvent(ev)
+        self._emit_camera_changed()
+
+    def keyReleaseEvent(self, ev):
+        super().keyReleaseEvent(ev)
+        self._emit_camera_changed()
+
+
 class StreamlineWindow(QtWidgets.QWidget):
+    camera_changed = QtCore.Signal(object)
+
     def __init__(
         self,
         axis_order: str = "XYZ",
@@ -129,6 +150,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._line_items = []
         self._streamlines = []
         self._volume_shape = None
+        self._suppress_camera_signal = False
 
         self._build_view()
 
@@ -137,9 +159,10 @@ class StreamlineWindow(QtWidgets.QWidget):
         layout.addWidget(self.view)
 
     def _build_view(self):
-        self.view = gl.GLViewWidget()
+        self.view = SyncableGLViewWidget()
         self.view.opts["distance"] = 200
         self.view.setBackgroundColor("k")
+        self.view.cameraChanged.connect(self._on_view_camera_changed)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -173,6 +196,36 @@ class StreamlineWindow(QtWidgets.QWidget):
             self.update_streamlines(self._streamlines, self._volume_shape)
         return True
 
+    def _on_view_camera_changed(self):
+        if self._suppress_camera_signal:
+            return
+        state = self.camera_state()
+        if state is None:
+            return
+        if hasattr(self, "camera_changed"):
+            try:
+                self.camera_changed.emit(state)
+            except Exception:
+                pass
+
+    def camera_state(self):
+        if self.view is None:
+            return None
+        keys = ["center", "distance", "azimuth", "elevation", "fov"]
+        return {key: self.view.opts.get(key) for key in keys if key in self.view.opts}
+
+    def set_camera_state(self, state):
+        if self.view is None or state is None:
+            return
+        self._suppress_camera_signal = True
+        try:
+            for key, value in state.items():
+                if key in self.view.opts:
+                    self.view.opts[key] = value
+            self.view.update()
+        finally:
+            self._suppress_camera_signal = False
+
     def clear_streamlines(self):
         for item in self._line_items:
             try:
@@ -188,11 +241,40 @@ class StreamlineWindow(QtWidgets.QWidget):
         if not self._streamlines:
             return
         self._update_view_center(volume_shape)
-        for line in self._streamlines:
+        prepared = []
+        magnitudes = []
+        for entry in self._streamlines:
+            if entry is None:
+                continue
+            mags = None
+            line = entry
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                line, mags = entry
             if line is None or len(line) == 0:
                 continue
-            pts = self._transform_points(np.asarray(line, dtype=np.float32), volume_shape)
-            colors = self._streamline_colors(pts.shape[0])
+            pts = np.asarray(line, dtype=np.float32)
+            mags_arr = None
+            if mags is not None:
+                mags_arr = np.asarray(mags, dtype=np.float32)
+                if mags_arr.shape[0] != pts.shape[0]:
+                    mags_arr = None
+                elif np.any(~np.isfinite(mags_arr)):
+                    mags_arr = None
+            if mags_arr is not None:
+                magnitudes.append(mags_arr)
+            prepared.append((pts, mags_arr))
+
+        mag_min = None
+        mag_max = None
+        if magnitudes:
+            all_mags = np.concatenate(magnitudes)
+            if all_mags.size > 0 and np.all(np.isfinite(all_mags)):
+                mag_min = float(np.min(all_mags))
+                mag_max = float(np.max(all_mags))
+
+        for line, mags in prepared:
+            pts = self._transform_points(line, volume_shape)
+            colors = self._streamline_colors(pts.shape[0], mags, mag_min, mag_max)
             item = gl.GLLinePlotItem(
                 pos=pts,
                 color=colors,
@@ -213,22 +295,23 @@ class StreamlineWindow(QtWidgets.QWidget):
     def _transform_points(self, points: np.ndarray, volume_shape):
         if points.size == 0:
             return points
-        xyz = points[:, [1, 0, 2]].astype(np.float32)
-        shape_xyz = np.array([volume_shape[1], volume_shape[0], volume_shape[2]], dtype=np.float32)
-        flips = self.axis_flips if self.axis_flips is not None else (False, False, False)
-        for axis, flip in enumerate(flips[:3]):
-            if flip:
-                xyz[:, axis] = (shape_xyz[axis] - 1.0) - xyz[:, axis]
-        axis_map = {"X": 0, "Y": 1, "Z": 2}
-        perm = [axis_map[c] for c in self.axis_order]
-        return xyz[:, perm]
+        return points[:, [1, 0, 2]].astype(np.float32)
 
-    def _streamline_colors(self, count: int) -> np.ndarray:
+    def _streamline_colors(self, count: int, magnitudes=None, vmin=None, vmax=None) -> np.ndarray:
         if count <= 1:
             return np.array([[0.0, 0.0, 0.5, 0.9]], dtype=np.float32)
-        positions = np.linspace(0.0, 1.0, count, dtype=np.float32)
         cmap = cm.get_cmap("jet")
-        colors = cmap(positions)
+        if magnitudes is None or vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax):
+            positions = np.linspace(0.0, 1.0, count, dtype=np.float32)
+            colors = cmap(positions)
+        else:
+            denom = vmax - vmin
+            if abs(denom) < 1e-8:
+                positions = np.zeros(count, dtype=np.float32)
+            else:
+                positions = (magnitudes - vmin) / denom
+                positions = np.clip(positions, 0.0, 1.0)
+            colors = cmap(positions)
         colors[:, 3] = 0.9
         return colors.astype(np.float32)
 
@@ -238,6 +321,7 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         super().__init__(parent)
         self.setWindowTitle("Streamline Gallery")
         self.views = []
+        self._syncing_camera = False
 
         scroll = QtWidgets.QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -257,6 +341,9 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
                 label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
                 view = StreamlineWindow(axis_order=order, axis_flips=flips, parent=panel)
                 view.setMinimumSize(240, 240)
+                view.camera_changed.connect(
+                    lambda state, source=view: self._sync_camera(source, state)
+                )
                 panel_layout.addWidget(label)
                 panel_layout.addWidget(view)
                 grid.addWidget(panel, row, col)
@@ -269,3 +356,15 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         scroll.setWidget(container)
         layout = QtWidgets.QVBoxLayout(self)
         layout.addWidget(scroll)
+
+    def _sync_camera(self, source_view, state):
+        if self._syncing_camera:
+            return
+        self._syncing_camera = True
+        try:
+            for view, _order, _flips in self.views:
+                if view is source_view:
+                    continue
+                view.set_camera_state(state)
+        finally:
+            self._syncing_camera = False

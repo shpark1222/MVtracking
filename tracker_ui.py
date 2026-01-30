@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import time
+import itertools
 from dataclasses import replace
 from typing import Dict, Tuple, Optional, List
 
@@ -3107,8 +3108,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available. Please load a mask first."
             )
             return
-        orders = ["XYZ"]
-        flips = [(False, False, False)]
+        orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
+        flips = list(itertools.product([False, True], repeat=3))
         gallery = StreamlineGalleryWindow(orders, flips)
         gallery.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         gallery.destroyed.connect(lambda _obj=None, g=gallery: self._on_streamline_gallery_closed(g))
@@ -3155,7 +3156,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             return self._vel_mask[:, :, :, t]
         return self._vel_mask
 
-    def _compute_streamlines(self, vel_t: np.ndarray, mask: np.ndarray) -> List[np.ndarray]:
+    def _compute_streamlines(self, vel_t: np.ndarray, mask: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         max_seeds = 200
         step_size = 0.6
         max_steps = 200
@@ -3172,7 +3173,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         for seed in seed_points:
             line = self._integrate_streamline(vel_t, mask, seed.astype(np.float32), step_size, max_steps)
             if line is not None and line.shape[0] >= min_steps:
-                streamlines.append(line)
+                speeds = np.array(
+                    [float(np.linalg.norm(self._sample_velocity_at(vel_t, pos))) for pos in line],
+                    dtype=np.float32,
+                )
+                streamlines.append((line, speeds))
         return streamlines
 
     def _integrate_streamline(
