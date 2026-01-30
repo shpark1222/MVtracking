@@ -188,11 +188,40 @@ class StreamlineWindow(QtWidgets.QWidget):
         if not self._streamlines:
             return
         self._update_view_center(volume_shape)
-        for line in self._streamlines:
+        prepared = []
+        magnitudes = []
+        for entry in self._streamlines:
+            if entry is None:
+                continue
+            mags = None
+            line = entry
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                line, mags = entry
             if line is None or len(line) == 0:
                 continue
-            pts = self._transform_points(np.asarray(line, dtype=np.float32), volume_shape)
-            colors = self._streamline_colors(pts.shape[0])
+            pts = np.asarray(line, dtype=np.float32)
+            mags_arr = None
+            if mags is not None:
+                mags_arr = np.asarray(mags, dtype=np.float32)
+                if mags_arr.shape[0] != pts.shape[0]:
+                    mags_arr = None
+                elif np.any(~np.isfinite(mags_arr)):
+                    mags_arr = None
+            if mags_arr is not None:
+                magnitudes.append(mags_arr)
+            prepared.append((pts, mags_arr))
+
+        mag_min = None
+        mag_max = None
+        if magnitudes:
+            all_mags = np.concatenate(magnitudes)
+            if all_mags.size > 0 and np.all(np.isfinite(all_mags)):
+                mag_min = float(np.min(all_mags))
+                mag_max = float(np.max(all_mags))
+
+        for line, mags in prepared:
+            pts = self._transform_points(line, volume_shape)
+            colors = self._streamline_colors(pts.shape[0], mags, mag_min, mag_max)
             item = gl.GLLinePlotItem(
                 pos=pts,
                 color=colors,
@@ -213,22 +242,23 @@ class StreamlineWindow(QtWidgets.QWidget):
     def _transform_points(self, points: np.ndarray, volume_shape):
         if points.size == 0:
             return points
-        xyz = points[:, [1, 0, 2]].astype(np.float32)
-        shape_xyz = np.array([volume_shape[1], volume_shape[0], volume_shape[2]], dtype=np.float32)
-        flips = self.axis_flips if self.axis_flips is not None else (False, False, False)
-        for axis, flip in enumerate(flips[:3]):
-            if flip:
-                xyz[:, axis] = (shape_xyz[axis] - 1.0) - xyz[:, axis]
-        axis_map = {"X": 0, "Y": 1, "Z": 2}
-        perm = [axis_map[c] for c in self.axis_order]
-        return xyz[:, perm]
+        return points[:, [1, 0, 2]].astype(np.float32)
 
-    def _streamline_colors(self, count: int) -> np.ndarray:
+    def _streamline_colors(self, count: int, magnitudes=None, vmin=None, vmax=None) -> np.ndarray:
         if count <= 1:
             return np.array([[0.0, 0.0, 0.5, 0.9]], dtype=np.float32)
-        positions = np.linspace(0.0, 1.0, count, dtype=np.float32)
         cmap = cm.get_cmap("jet")
-        colors = cmap(positions)
+        if magnitudes is None or vmin is None or vmax is None or not np.isfinite(vmin) or not np.isfinite(vmax):
+            positions = np.linspace(0.0, 1.0, count, dtype=np.float32)
+            colors = cmap(positions)
+        else:
+            denom = vmax - vmin
+            if abs(denom) < 1e-8:
+                positions = np.zeros(count, dtype=np.float32)
+            else:
+                positions = (magnitudes - vmin) / denom
+                positions = np.clip(positions, 0.0, 1.0)
+            colors = cmap(positions)
         colors[:, 3] = 0.9
         return colors.astype(np.float32)
 
