@@ -1384,7 +1384,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     # ============================
     def on_phase_changed(self, v: int):
         self._remember_current_levels(self._current_display_mode)
-        self.set_phase(v - 1)
+        self.set_phase(v - 1, force=True)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if event.key() == QtCore.Qt.Key.Key_Space:
