@@ -479,4 +479,11 @@ def reslice_plane_fixedN(
         for key, vol in extra_scalars.items():
             extras[key] = map_coordinates(vol, coords, order=1, mode="constant", cval=0.0).reshape(Npix, Npix)
 
+    extras["plane_u"] = np.asarray(u, dtype=np.float64)
+    extras["plane_v"] = np.asarray(v, dtype=np.float64)
+    extras["plane_n"] = np.asarray(n, dtype=np.float64)
+    extras["vx"] = np.asarray(vx, dtype=np.float32)
+    extras["vy"] = np.asarray(vy, dtype=np.float32)
+    extras["vz"] = np.asarray(vz, dtype=np.float32)
+
     return Ipcm, Ivelmag, Vn, spmm_eff, extras
