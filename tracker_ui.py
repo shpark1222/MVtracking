@@ -33,7 +33,7 @@ from stl_conversion import (
     write_stl_from_patient_contour,
     write_stl_from_patient_contour_extruded,
 )
-from mvpack_io import MVPack, CineGeom, load_mrstruct, load_mvpack_h5
+from mvpack_io import MVPack, CineGeom, VolGeom, load_mrstruct, load_mvpack_h5
 from plot_widgets import PlotCanvas, StreamlineGalleryWindow, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
@@ -1302,6 +1302,33 @@ class ValveTracker(QtWidgets.QMainWindow):
         abc = np.column_stack([col, row, slc])
         return (orgn4[None, :] + abc @ A.T)
 
+    def _voxel_to_patient_rotation(self, geom: VolGeom) -> Optional[np.ndarray]:
+        edges = geom.edges
+        if edges is not None:
+            edges = np.asarray(edges, dtype=np.float64)
+            if edges.shape == (3, 4):
+                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+            if edges.shape == (4, 4):
+                A = edges[:3, :3]
+                R = np.zeros((3, 3), dtype=np.float64)
+                for i in range(3):
+                    v = A[:, i]
+                    n = np.linalg.norm(v)
+                    R[:, i] = v / (n if n > 0 else 1e-12)
+                return R
+
+        if geom.iop is not None:
+            iop = np.asarray(geom.iop, dtype=np.float64).reshape(6)
+            col_vec = iop[:3]
+            row_vec = iop[3:6]
+            col_vec = col_vec / (np.linalg.norm(col_vec) or 1e-12)
+            row_vec = row_vec / (np.linalg.norm(row_vec) or 1e-12)
+            slc_vec = np.cross(col_vec, row_vec)
+            slc_vec = slc_vec / (np.linalg.norm(slc_vec) or 1e-12)
+            return np.column_stack([col_vec, row_vec, slc_vec])
+
+        return None
+
     def _overlay_line_on_plot(self, plot: pg.PlotItem, coords: np.ndarray, color: str, label: str):
         if coords.shape[0] != 2:
             return
@@ -1385,6 +1412,10 @@ class ValveTracker(QtWidgets.QMainWindow):
             sp = geom.slice_positions
             print(f"[mvtracking] slice_positions first/last={float(sp[0]):.4f}/{float(sp[-1]):.4f}")
 
+        R = self._voxel_to_patient_rotation(geom)
+        if R is not None:
+            print(f"[mvtracking] voxel->patient R={np.array2string(R, precision=4, separator=',')}")
+
         if self.active_cine_key in self.pack.cine_planes:
             cine_geom = self._get_cine_geom_raw(self.active_cine_key)
             col_vec = cine_geom.iop[:3]
@@ -1397,6 +1428,9 @@ class ValveTracker(QtWidgets.QMainWindow):
                 f"{self.pack.cine_planes[self.active_cine_key]['geom'].axis_map} "
                 f"normal={np.array2string(normal_vec, precision=4, separator=',')}"
             )
+            if R is not None:
+                dot_val = float(np.dot(R[:, 2], normal_vec))
+                print(f"[mvtracking] voxel Z vs cine normal dot={dot_val:.4f}")
 
     # ============================
     # Phase update
@@ -1578,6 +1612,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_xy = self._get_active_line_abs_raw(t)
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
         vel5d = self._vel_raw.astype(np.float32).copy()
+        vol_geom = self.pack.geom
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
@@ -1595,10 +1630,14 @@ class ValveTracker(QtWidgets.QMainWindow):
             else:
                 vel5d *= self._vel_mask[..., None, None]
 
+        R = self._voxel_to_patient_rotation(vol_geom)
+        if R is not None:
+            vel5d = np.tensordot(R, vel5d, axes=([1], [3]))
+            vel5d = np.moveaxis(vel5d, 0, 3)
+
         if self.axis_order or self.axis_flips:
             vel5d = transform_vector_components(vel5d, self.axis_order, self.axis_flips)
 
-        vol_geom = self.pack.geom
         Ipcm, Ivelmag, Vn, spmm, extras = reslice_plane_fixedN(
             pcmra3d=pcmra3d,
             vel5d=vel5d,
