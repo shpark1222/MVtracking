@@ -4,6 +4,7 @@ import json
 import os
 import time
 import itertools
+from dataclasses import replace
 from typing import Dict, Tuple, Optional, List
 
 import numpy as np
@@ -57,6 +58,33 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pack = pack
         self.work_folder = work_folder
         self.tracking_path = tracking_path
+
+        # ------------------------------------------------------------------
+        # FIX: normalize pcmra/vel axis to (row, col, slice, ...)
+        # If pack was saved as (col, row, slice, ...), transpose once here
+        # so you do NOT need to use YXZ swap later.
+        # ------------------------------------------------------------------
+        try:
+            # pcmra: (X, Y, Z, T) -> (Y, X, Z, T)
+            if pack.pcmra.ndim == 4:
+                pack.pcmra = np.transpose(pack.pcmra, (1, 0, 2, 3))
+
+            # vel: (X, Y, Z, 3, T) -> (Y, X, Z, 3, T)
+            if pack.vel is not None and pack.vel.ndim == 5:
+                pack.vel = np.transpose(pack.vel, (1, 0, 2, 3, 4))
+
+                # swap velocity components too: (vx, vy, vz) -> (vy, vx, vz)
+                pack.vel = pack.vel[:, :, :, [1, 0, 2], :]
+
+            # optional scalar volumes that follow spatial axes
+            if getattr(pack, "ke", None) is not None and pack.ke.ndim == 4:
+                pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
+            if getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
+                pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
+
+        except Exception:
+            pass
+
         self._vel_raw = self.pack.vel
         self._vel_mask = None
             
@@ -1350,17 +1378,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             f"{axis_map} orgn4={np.array2string(geom.orgn4, precision=4, separator=',')} "
             f"A0={np.array2string(geom.A[:, 0], precision=4, separator=',')}"
         )
-        R_vox_to_patient, r_source = self._get_voxel_to_patient_rotation()
-        if R_vox_to_patient is not None:
-            col_dir = R_vox_to_patient[:, 0]
-            row_dir = R_vox_to_patient[:, 1]
-            slc_dir = R_vox_to_patient[:, 2]
-            print(
-                "[mvtracking] vox->patient R"
-                f"({r_source}) col={np.array2string(col_dir, precision=4, separator=',')} "
-                f"row={np.array2string(row_dir, precision=4, separator=',')} "
-                f"slc={np.array2string(slc_dir, precision=4, separator=',')}"
-            )
         if geom.slice_order is not None:
             order = geom.slice_order
             print(f"[mvtracking] slice_order first/last={int(order[0])}/{int(order[-1])}")
@@ -1380,49 +1397,6 @@ class ValveTracker(QtWidgets.QMainWindow):
                 f"{self.pack.cine_planes[self.active_cine_key]['geom'].axis_map} "
                 f"normal={np.array2string(normal_vec, precision=4, separator=',')}"
             )
-            if R_vox_to_patient is not None:
-                slc_dir = R_vox_to_patient[:, 2]
-                dot_ns = float(np.dot(normal_vec, slc_dir))
-                print(f"[mvtracking] normal·slice_dir={dot_ns:.4f} (plane vs v axis)")
-
-    def _get_voxel_to_patient_rotation(self):
-        geom = self.pack.geom
-
-        def _unit(vec: np.ndarray) -> Optional[np.ndarray]:
-            n = np.linalg.norm(vec)
-            if n < 1e-8 or not np.isfinite(n):
-                return None
-            return vec / n
-
-        edges = geom.edges
-        if edges is not None:
-            edges = np.asarray(edges, dtype=np.float64)
-            if edges.shape == (3, 4):
-                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
-            if edges.shape == (4, 4):
-                col_dir = _unit(edges[:3, 0])
-                row_dir = _unit(edges[:3, 1])
-                slc_dir = _unit(edges[:3, 2])
-                if col_dir is not None and row_dir is not None and slc_dir is not None:
-                    return np.column_stack([col_dir, row_dir, slc_dir]), "edges"
-
-        iop = geom.iop
-        if iop is not None:
-            iop = np.asarray(iop, dtype=np.float64).reshape(6)
-            col_dir = _unit(iop[:3])
-            row_dir = _unit(iop[3:])
-            if col_dir is None or row_dir is None:
-                return None, None
-            slc_dir = _unit(np.cross(col_dir, row_dir))
-            if slc_dir is None:
-                return None, None
-            if geom.ipps is not None and len(geom.ipps) >= 2:
-                d = geom.ipps[-1] - geom.ipps[0]
-                if np.dot(slc_dir, d) < 0:
-                    slc_dir = -slc_dir
-            return np.column_stack([col_dir, row_dir, slc_dir]), "IOP"
-
-        return None, None
 
     # ============================
     # Phase update
@@ -1540,14 +1514,70 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.line_norm[t] = self._default_line_norm()
         return self._norm_to_abs_line(self.line_norm[t], H_raw, W_raw)
 
+    def _transform_vol_geom(
+        self,
+        vol_geom,
+        vol_shape: Tuple[int, int, int],
+        axis_order: Optional[str],
+        axis_flips: Optional[Tuple[bool, bool, bool]],
+    ):
+        if not axis_order and not axis_flips:
+            return vol_geom
+        if axis_order is None:
+            axis_order = "XYZ"
+        axis_order = str(axis_order).upper()
+        if len(axis_order) != 3 or set(axis_order) != {"X", "Y", "Z"}:
+            raise ValueError(f"Invalid axis order '{axis_order}'. Expected permutation of XYZ.")
+
+        if axis_flips is None:
+            axis_flips = (False, False, False)
+        if len(axis_flips) < 3:
+            axis_flips = tuple(axis_flips) + (False,) * (3 - len(axis_flips))
+
+        axis_map = {"X": 0, "Y": 1, "Z": 2}
+        perm = [axis_map[c] for c in axis_order]
+        if perm == [0, 1, 2] and not any(axis_flips):
+            return vol_geom
+
+        shape = np.asarray(vol_shape[:3], dtype=np.int64)
+        if shape.size < 3:
+            return vol_geom
+        new_shape = shape[perm]
+
+        M = np.zeros((4, 4), dtype=np.float64)
+        M[3, 3] = 1.0
+        for new_axis, old_axis in enumerate(perm):
+            sign = -1.0 if axis_flips[new_axis] else 1.0
+            M[old_axis, new_axis] = sign
+            if axis_flips[new_axis]:
+                M[old_axis, 3] = float(new_shape[new_axis] - 1)
+
+        new_edges = None
+        if vol_geom.edges is not None:
+            edges = np.asarray(vol_geom.edges, dtype=np.float64)
+            if edges.shape == (3, 4):
+                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+            if edges.shape != (4, 4):
+                raise RuntimeError(f"Invalid volume edges shape: {edges.shape}")
+            new_edges = edges @ M
+
+        new_A = vol_geom.A
+        new_orgn4 = vol_geom.orgn4
+        if new_edges is not None:
+            new_A = new_edges[:3, :3].copy()
+            new_orgn4 = new_edges[:3, 3].copy()
+        elif vol_geom.A is not None and vol_geom.orgn4 is not None:
+            A = np.asarray(vol_geom.A, dtype=np.float64)
+            orgn4 = np.asarray(vol_geom.orgn4, dtype=np.float64).reshape(3)
+            new_A = A @ M[:3, :3]
+            new_orgn4 = orgn4 + A @ M[:3, 3]
+
+        return replace(vol_geom, edges=new_edges, A=new_A, orgn4=new_orgn4)
+
     def reslice_for_phase(self, t: int):
         line_xy = self._get_active_line_abs_raw(t)
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
         vel5d = self._vel_raw.astype(np.float32).copy()
-        R_vox_to_patient, _ = self._get_voxel_to_patient_rotation()
-        if R_vox_to_patient is not None:
-            R_vox_to_patient = R_vox_to_patient.astype(np.float32, copy=False)
-            vel5d = np.einsum("ij,xyzjt->xyzit", R_vox_to_patient, vel5d, optimize=True)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
