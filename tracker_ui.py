@@ -1378,17 +1378,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             f"{axis_map} orgn4={np.array2string(geom.orgn4, precision=4, separator=',')} "
             f"A0={np.array2string(geom.A[:, 0], precision=4, separator=',')}"
         )
-        R_vox_to_patient, r_source = self._get_voxel_to_patient_rotation()
-        if R_vox_to_patient is not None:
-            col_dir = R_vox_to_patient[:, 0]
-            row_dir = R_vox_to_patient[:, 1]
-            slc_dir = R_vox_to_patient[:, 2]
-            print(
-                "[mvtracking] vox->patient R"
-                f"({r_source}) col={np.array2string(col_dir, precision=4, separator=',')} "
-                f"row={np.array2string(row_dir, precision=4, separator=',')} "
-                f"slc={np.array2string(slc_dir, precision=4, separator=',')}"
-            )
         if geom.slice_order is not None:
             order = geom.slice_order
             print(f"[mvtracking] slice_order first/last={int(order[0])}/{int(order[-1])}")
@@ -1408,49 +1397,6 @@ class ValveTracker(QtWidgets.QMainWindow):
                 f"{self.pack.cine_planes[self.active_cine_key]['geom'].axis_map} "
                 f"normal={np.array2string(normal_vec, precision=4, separator=',')}"
             )
-            if R_vox_to_patient is not None:
-                slc_dir = R_vox_to_patient[:, 2]
-                dot_ns = float(np.dot(normal_vec, slc_dir))
-                print(f"[mvtracking] normal·slice_dir={dot_ns:.4f} (plane vs v axis)")
-
-    def _get_voxel_to_patient_rotation(self):
-        geom = self.pack.geom
-
-        def _unit(vec: np.ndarray) -> Optional[np.ndarray]:
-            n = np.linalg.norm(vec)
-            if n < 1e-8 or not np.isfinite(n):
-                return None
-            return vec / n
-
-        edges = geom.edges
-        if edges is not None:
-            edges = np.asarray(edges, dtype=np.float64)
-            if edges.shape == (3, 4):
-                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
-            if edges.shape == (4, 4):
-                col_dir = _unit(edges[:3, 0])
-                row_dir = _unit(edges[:3, 1])
-                slc_dir = _unit(edges[:3, 2])
-                if col_dir is not None and row_dir is not None and slc_dir is not None:
-                    return np.column_stack([col_dir, row_dir, slc_dir]), "edges"
-
-        iop = geom.iop
-        if iop is not None:
-            iop = np.asarray(iop, dtype=np.float64).reshape(6)
-            col_dir = _unit(iop[:3])
-            row_dir = _unit(iop[3:])
-            if col_dir is None or row_dir is None:
-                return None, None
-            slc_dir = _unit(np.cross(col_dir, row_dir))
-            if slc_dir is None:
-                return None, None
-            if geom.ipps is not None and len(geom.ipps) >= 2:
-                d = geom.ipps[-1] - geom.ipps[0]
-                if np.dot(slc_dir, d) < 0:
-                    slc_dir = -slc_dir
-            return np.column_stack([col_dir, row_dir, slc_dir]), "IOP"
-
-        return None, None
 
     # ============================
     # Phase update
@@ -1632,10 +1578,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         line_xy = self._get_active_line_abs_raw(t)
         pcmra3d = self.pack.pcmra[:, :, :, t].astype(np.float32)
         vel5d = self._vel_raw.astype(np.float32).copy()
-        R_vox_to_patient, _ = self._get_voxel_to_patient_rotation()
-        if R_vox_to_patient is not None:
-            R_vox_to_patient = R_vox_to_patient.astype(np.float32, copy=False)
-            vel5d = np.einsum("ij,xyzjt->xyzit", R_vox_to_patient, vel5d, optimize=True)
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
