@@ -4,7 +4,6 @@ import json
 import os
 import time
 import itertools
-from dataclasses import replace
 from typing import Dict, Tuple, Optional, List
 
 import numpy as np
@@ -58,61 +57,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.pack = pack
         self.work_folder = work_folder
         self.tracking_path = tracking_path
-        self._initial_axis_swap = {"swap_xy": False, "source": "unset"}
-
-        # ------------------------------------------------------------------
-        # FIX: normalize pcmra/vel axis to (row, col, slice, ...)
-        # If pack was saved as (col, row, slice, ...), transpose once here
-        # so you do NOT need to use YXZ swap later.
-        # ------------------------------------------------------------------
-        try:
-            swap_xy, swap_info = self._infer_xy_swap_from_geom(self.pack.geom)
-            if swap_xy is None:
-                if self.pack.geom.iop is not None or self.pack.geom.ipps is not None:
-                    swap_xy = False
-                    swap_info = {"source": "iop/ipp-present"}
-                else:
-                    swap_xy = True
-                    swap_info = {"source": "default-legacy"}
-            self._initial_axis_swap = {
-                "swap_xy": swap_xy,
-                **swap_info,
-            }
-            geom_shape = tuple(int(v) for v in self.pack.pcmra.shape[:3])
-
-            # pcmra: (X, Y, Z, T) -> (Y, X, Z, T)
-            if swap_xy and pack.pcmra.ndim == 4:
-                pack.pcmra = np.transpose(pack.pcmra, (1, 0, 2, 3))
-
-            # vel: (X, Y, Z, 3, T) -> (Y, X, Z, 3, T)
-            if swap_xy and pack.vel is not None and pack.vel.ndim == 5:
-                pack.vel = np.transpose(pack.vel, (1, 0, 2, 3, 4))
-
-                # swap velocity components too: (vx, vy, vz) -> (vy, vx, vz)
-                pack.vel = pack.vel[:, :, :, [1, 0, 2], :]
-
-            # optional scalar volumes that follow spatial axes
-            if swap_xy and getattr(pack, "ke", None) is not None and pack.ke.ndim == 4:
-                pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
-            if swap_xy and getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
-                pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
-
-            if swap_xy:
-                geom = self.pack.geom
-                geom = self._transform_vol_geom(
-                    geom,
-                    vol_shape=geom_shape,
-                    axis_order="YXZ",
-                    axis_flips=None,
-                )
-                if geom.iop is not None:
-                    iop = np.asarray(geom.iop, dtype=np.float64).reshape(6)
-                    geom = replace(geom, iop=np.concatenate([iop[3:], iop[:3]]))
-                self.pack.geom = geom
-
-        except Exception:
-            pass
-
         self._vel_raw = self.pack.vel
         self._vel_mask = None
             
@@ -1406,17 +1350,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             f"{axis_map} orgn4={np.array2string(geom.orgn4, precision=4, separator=',')} "
             f"A0={np.array2string(geom.A[:, 0], precision=4, separator=',')}"
         )
-        swap_info = getattr(self, "_initial_axis_swap", None)
-        if swap_info:
-            row_axis = swap_info.get("row_axis")
-            col_axis = swap_info.get("col_axis")
-            axis_hint = ""
-            if row_axis is not None and col_axis is not None:
-                axis_hint = f" row_axis={row_axis} col_axis={col_axis}"
-            print(
-                "[mvtracking] axis_swap_xy="
-                f"{swap_info.get('swap_xy')} source={swap_info.get('source')}{axis_hint}"
-            )
         R_vox_to_patient, r_source = self._get_voxel_to_patient_rotation()
         if R_vox_to_patient is not None:
             col_dir = R_vox_to_patient[:, 0]
@@ -1606,108 +1539,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.line_norm[t] is None:
             self.line_norm[t] = self._default_line_norm()
         return self._norm_to_abs_line(self.line_norm[t], H_raw, W_raw)
-
-    def _infer_xy_swap_from_geom(self, geom):
-        axis_map = geom.axis_map if geom.axis_map is not None else {}
-        row_ref = axis_map.get("Rows")
-        col_ref = axis_map.get("Columns")
-        if row_ref is None or col_ref is None:
-            return None, {"source": "axis_map-missing"}
-
-        basis = None
-        if geom.edges is not None:
-            edges = np.asarray(geom.edges, dtype=np.float64)
-            if edges.shape == (3, 4):
-                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
-            if edges.shape == (4, 4):
-                basis = edges[:3, :3]
-        if basis is None and geom.A is not None:
-            basis = np.asarray(geom.A, dtype=np.float64)
-        if basis is None:
-            return None, {"source": "geom-missing"}
-
-        def _unit(vec: np.ndarray) -> Optional[np.ndarray]:
-            n = np.linalg.norm(vec)
-            if n < 1e-8 or not np.isfinite(n):
-                return None
-            return vec / n
-
-        axis_dirs = [_unit(basis[:, i]) for i in range(3)]
-        row_dir = _unit(np.asarray(row_ref, dtype=np.float64).reshape(3))
-        col_dir = _unit(np.asarray(col_ref, dtype=np.float64).reshape(3))
-        if row_dir is None or col_dir is None or any(v is None for v in axis_dirs):
-            return None, {"source": "axis_map-invalid"}
-
-        row_dots = [abs(float(np.dot(row_dir, axis_dirs[i]))) for i in range(3)]
-        col_dots = [abs(float(np.dot(col_dir, axis_dirs[i]))) for i in range(3)]
-        row_axis = int(np.argmax(row_dots))
-        col_axis = int(np.argmax(col_dots))
-
-        if row_axis == 0 and col_axis == 1:
-            return False, {"source": "axis_map/geom", "row_axis": row_axis, "col_axis": col_axis}
-        if row_axis == 1 and col_axis == 0:
-            return True, {"source": "axis_map/geom", "row_axis": row_axis, "col_axis": col_axis}
-        return None, {"source": "axis_map-ambiguous", "row_axis": row_axis, "col_axis": col_axis}
-
-    def _transform_vol_geom(
-        self,
-        vol_geom,
-        vol_shape: Tuple[int, int, int],
-        axis_order: Optional[str],
-        axis_flips: Optional[Tuple[bool, bool, bool]],
-    ):
-        if not axis_order and not axis_flips:
-            return vol_geom
-        if axis_order is None:
-            axis_order = "XYZ"
-        axis_order = str(axis_order).upper()
-        if len(axis_order) != 3 or set(axis_order) != {"X", "Y", "Z"}:
-            raise ValueError(f"Invalid axis order '{axis_order}'. Expected permutation of XYZ.")
-
-        if axis_flips is None:
-            axis_flips = (False, False, False)
-        if len(axis_flips) < 3:
-            axis_flips = tuple(axis_flips) + (False,) * (3 - len(axis_flips))
-
-        axis_map = {"X": 0, "Y": 1, "Z": 2}
-        perm = [axis_map[c] for c in axis_order]
-        if perm == [0, 1, 2] and not any(axis_flips):
-            return vol_geom
-
-        shape = np.asarray(vol_shape[:3], dtype=np.int64)
-        if shape.size < 3:
-            return vol_geom
-        new_shape = shape[perm]
-
-        M = np.zeros((4, 4), dtype=np.float64)
-        M[3, 3] = 1.0
-        for new_axis, old_axis in enumerate(perm):
-            sign = -1.0 if axis_flips[new_axis] else 1.0
-            M[old_axis, new_axis] = sign
-            if axis_flips[new_axis]:
-                M[old_axis, 3] = float(new_shape[new_axis] - 1)
-
-        new_edges = None
-        if vol_geom.edges is not None:
-            edges = np.asarray(vol_geom.edges, dtype=np.float64)
-            if edges.shape == (3, 4):
-                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
-            if edges.shape != (4, 4):
-                raise RuntimeError(f"Invalid volume edges shape: {edges.shape}")
-            new_edges = edges @ M
-
-        new_A = vol_geom.A
-        new_orgn4 = vol_geom.orgn4
-        if new_edges is not None:
-            new_A = new_edges[:3, :3].copy()
-            new_orgn4 = new_edges[:3, 3].copy()
-        elif vol_geom.A is not None and vol_geom.orgn4 is not None:
-            A = np.asarray(vol_geom.A, dtype=np.float64)
-            orgn4 = np.asarray(vol_geom.orgn4, dtype=np.float64).reshape(3)
-            new_A = A @ M[:3, :3]
-            new_orgn4 = orgn4 + A @ M[:3, 3]
-
-        return replace(vol_geom, edges=new_edges, A=new_A, orgn4=new_orgn4)
 
     def reslice_for_phase(self, t: int):
         line_xy = self._get_active_line_abs_raw(t)
