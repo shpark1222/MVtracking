@@ -1327,6 +1327,16 @@ class ValveTracker(QtWidgets.QMainWindow):
             slc_vec = slc_vec / (np.linalg.norm(slc_vec) or 1e-12)
             return np.column_stack([col_vec, row_vec, slc_vec])
 
+        if geom.A is not None:
+            A = np.asarray(geom.A, dtype=np.float64)
+            if A.shape == (3, 3):
+                R = np.zeros((3, 3), dtype=np.float64)
+                for i in range(3):
+                    v = A[:, i]
+                    n = np.linalg.norm(v)
+                    R[:, i] = v / (n if n > 0 else 1e-12)
+                return R
+
         return None
 
     def _overlay_line_on_plot(self, plot: pg.PlotItem, coords: np.ndarray, color: str, label: str):
