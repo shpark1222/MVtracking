@@ -153,6 +153,15 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._contour_item = None
         self._contour_points = None
         self._suppress_camera_signal = False
+        self._prepared_streamlines = []
+        self._show_streamlines = True
+        self._particles_enabled = False
+        self._particle_item = None
+        self._particle_timer = QtCore.QTimer(self)
+        self._particle_timer.timeout.connect(self._advance_particles)
+        self._particle_step = 0
+        self._particle_cycles = 1
+        self._particle_cycle_index = 0
 
         self._build_view()
 
@@ -237,6 +246,19 @@ class StreamlineWindow(QtWidgets.QWidget):
             except Exception:
                 pass
         self._line_items = []
+        self._prepared_streamlines = []
+
+    def clear_particles(self):
+        if self._particle_item is None:
+            return
+        try:
+            self.view.removeItem(self._particle_item)
+        except Exception:
+            pass
+        self._particle_item = None
+        self._particle_timer.stop()
+        self._particle_step = 0
+        self._particle_cycle_index = 0
 
     def clear_contour(self):
         if self._contour_item is None:
@@ -251,7 +273,10 @@ class StreamlineWindow(QtWidgets.QWidget):
         self.clear_streamlines()
         self._volume_shape = volume_shape
         self._streamlines = list(streamlines) if streamlines is not None else []
+        self._particle_step = 0
+        self._particle_cycle_index = 0
         if not self._streamlines:
+            self._update_particles([])
             return
         self._update_view_center(volume_shape)
         prepared = []
@@ -288,15 +313,105 @@ class StreamlineWindow(QtWidgets.QWidget):
         for line, mags in prepared:
             pts = self._transform_points(line, volume_shape)
             colors = self._streamline_colors(pts.shape[0], mags, mag_min, mag_max)
-            item = gl.GLLinePlotItem(
-                pos=pts,
-                color=colors,
-                width=1.0,
-                antialias=True,
-                mode="line_strip",
-            )
-            self.view.addItem(item)
-            self._line_items.append(item)
+            self._prepared_streamlines.append((pts, colors))
+        if self._show_streamlines:
+            for pts, colors in self._prepared_streamlines:
+                item = gl.GLLinePlotItem(
+                    pos=pts,
+                    color=colors,
+                    width=1.0,
+                    antialias=True,
+                    mode="line_strip",
+                )
+                self.view.addItem(item)
+                self._line_items.append(item)
+        self._update_particles(self._prepared_streamlines)
+
+    def set_show_streamlines(self, show: bool) -> None:
+        show = bool(show)
+        if self._show_streamlines == show:
+            return
+        self._show_streamlines = show
+        self.clear_streamlines()
+        if self._show_streamlines and self._prepared_streamlines:
+            for pts, colors in self._prepared_streamlines:
+                item = gl.GLLinePlotItem(
+                    pos=pts,
+                    color=colors,
+                    width=1.0,
+                    antialias=True,
+                    mode="line_strip",
+                )
+                self.view.addItem(item)
+                self._line_items.append(item)
+
+    def set_particles_enabled(self, enabled: bool, interval_ms: int = 50) -> None:
+        enabled = bool(enabled)
+        if self._particles_enabled == enabled:
+            if enabled and interval_ms:
+                self._particle_timer.setInterval(int(interval_ms))
+            return
+        self._particles_enabled = enabled
+        if not enabled:
+            self.clear_particles()
+            return
+        if self._particle_item is None:
+            self._particle_item = gl.GLScatterPlotItem(size=4.0, pxMode=True)
+            self.view.addItem(self._particle_item)
+        if interval_ms:
+            self._particle_timer.setInterval(int(interval_ms))
+        self._particle_timer.start()
+        self._update_particles(self._prepared_streamlines)
+
+    def set_particle_cycles(self, cycles: int) -> None:
+        cycles = max(1, int(cycles))
+        if self._particle_cycles == cycles:
+            return
+        self._particle_cycles = cycles
+        self._particle_cycle_index = 0
+        self._particle_step = 0
+
+    def _update_particles(self, prepared_streamlines) -> None:
+        if not self._particles_enabled:
+            return
+        if self._particle_item is None:
+            self._particle_item = gl.GLScatterPlotItem(size=4.0, pxMode=True)
+            self.view.addItem(self._particle_item)
+        positions = []
+        colors = []
+        for pts, stream_colors in prepared_streamlines:
+            if pts.size == 0:
+                continue
+            if self._particle_step >= pts.shape[0]:
+                continue
+            idx = self._particle_step
+            positions.append(pts[idx])
+            if stream_colors is None or stream_colors.shape[0] != pts.shape[0]:
+                colors.append([1.0, 1.0, 1.0, 0.9])
+            else:
+                colors.append(stream_colors[idx])
+        if not positions:
+            self._particle_item.setData(pos=np.empty((0, 3), dtype=np.float32))
+            return
+        self._particle_item.setData(pos=np.array(positions, dtype=np.float32), color=np.array(colors, dtype=np.float32))
+
+    def _advance_particles(self) -> None:
+        if not self._particles_enabled or not self._prepared_streamlines:
+            return
+        max_len = max((pts.shape[0] for pts, _colors in self._prepared_streamlines), default=0)
+        if max_len <= 1:
+            return
+        next_step = self._particle_step + 1
+        if next_step >= max_len:
+            self._particle_cycle_index += 1
+            if self._particle_cycle_index >= self._particle_cycles:
+                self._particle_timer.stop()
+                self._update_particles([])
+                return
+            self._particle_step = 0
+        else:
+            self._particle_step = next_step
+        self._update_particles(self._prepared_streamlines)
 
     def update_contour(self, contour_points, volume_shape):
         self.clear_contour()
@@ -352,8 +467,7 @@ class StreamlineWindow(QtWidgets.QWidget):
 
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
-    seed_requested = QtCore.Signal(int)
-    open_single_view = QtCore.Signal()
+    streamline_visibility_changed = QtCore.Signal(bool)
 
     def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
         super().__init__(parent)
@@ -362,6 +476,7 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         self._syncing_camera = False
         self._seed_phase = None
         self._seed_points = None
+        self._show_streamlines = False
 
         scroll = QtWidgets.QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -396,20 +511,27 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         scroll.setWidget(container)
         layout = QtWidgets.QVBoxLayout(self)
         control_row = QtWidgets.QHBoxLayout()
-        control_row.addWidget(QtWidgets.QLabel("Seed count"))
-        self.seed_spin = QtWidgets.QSpinBox(self)
-        self.seed_spin.setRange(1, 5000)
-        self.seed_spin.setValue(200)
-        control_row.addWidget(self.seed_spin)
-        seed_btn = QtWidgets.QPushButton("Seed from contour", self)
-        seed_btn.clicked.connect(lambda: self.seed_requested.emit(self.seed_spin.value()))
-        control_row.addWidget(seed_btn)
-        open_btn = QtWidgets.QPushButton("Open single view tab", self)
-        open_btn.clicked.connect(self.open_single_view.emit)
-        control_row.addWidget(open_btn)
+        self.show_streamlines_btn = QtWidgets.QPushButton("Show streamlines", self)
+        self.show_streamlines_btn.setCheckable(True)
+        self.show_streamlines_btn.clicked.connect(self._toggle_streamlines)
+        control_row.addWidget(self.show_streamlines_btn)
         control_row.addStretch(1)
         layout.addLayout(control_row)
         layout.addWidget(scroll)
+
+    def show_streamlines(self) -> bool:
+        return self._show_streamlines
+
+    def _toggle_streamlines(self, checked: bool) -> None:
+        self._show_streamlines = bool(checked)
+        label = "Hide streamlines" if self._show_streamlines else "Show streamlines"
+        self.show_streamlines_btn.setText(label)
+        self.streamline_visibility_changed.emit(self._show_streamlines)
+
+    def clear_streamlines(self) -> None:
+        for view, _order, _flips in self.views:
+            view.update_streamlines([], None)
+            view.update_contour(None, None)
 
     def set_seed_points(self, seed_points, phase: int):
         self._seed_points = None if seed_points is None else np.asarray(seed_points, dtype=np.float32)
@@ -440,22 +562,21 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Streamline Player")
-        self._timer = QtCore.QTimer(self)
-        self._timer.timeout.connect(self._advance_phase)
-        self._total_steps = 0
-        self._step_index = 0
-        self._start_phase = 1
         self._phase = 1
-        self._use_contour_seed = False
+        self._seed_mode = "mv"
 
         layout = QtWidgets.QVBoxLayout(self)
-        controls = QtWidgets.QHBoxLayout()
-        controls.addWidget(QtWidgets.QLabel("Axis order"))
+        top_row = QtWidgets.QHBoxLayout()
+
+        controls_widget = QtWidgets.QWidget(self)
+        controls_layout = QtWidgets.QVBoxLayout(controls_widget)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        axis_form = QtWidgets.QFormLayout()
         self.axis_order_combo = QtWidgets.QComboBox(self)
         self.axis_order_combo.addItems(["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"])
         self.axis_order_combo.currentTextChanged.connect(lambda _val: self.phase_changed.emit(self._phase))
-        controls.addWidget(self.axis_order_combo)
-        controls.addWidget(QtWidgets.QLabel("Axis flips"))
+        axis_form.addRow("Axis order", self.axis_order_combo)
         self.axis_flip_combo = QtWidgets.QComboBox(self)
         self.axis_flip_combo.addItems(
             [
@@ -470,49 +591,60 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
             ]
         )
         self.axis_flip_combo.currentTextChanged.connect(lambda _val: self.phase_changed.emit(self._phase))
-        controls.addWidget(self.axis_flip_combo)
-        controls.addWidget(QtWidgets.QLabel("Start phase"))
-        self.start_phase_spin = QtWidgets.QSpinBox(self)
-        self.start_phase_spin.setRange(1, 1)
-        controls.addWidget(self.start_phase_spin)
-        controls.addWidget(QtWidgets.QLabel("Cycles"))
-        self.cycle_spin = QtWidgets.QSpinBox(self)
-        self.cycle_spin.setRange(1, 20)
-        self.cycle_spin.setValue(1)
-        controls.addWidget(self.cycle_spin)
-        controls.addWidget(QtWidgets.QLabel("Interval (ms)"))
-        self.interval_spin = QtWidgets.QSpinBox(self)
-        self.interval_spin.setRange(10, 5000)
-        self.interval_spin.setValue(150)
-        controls.addWidget(self.interval_spin)
-        play_btn = QtWidgets.QPushButton("Play", self)
-        play_btn.clicked.connect(self.start_playback)
-        controls.addWidget(play_btn)
-        stop_btn = QtWidgets.QPushButton("Stop", self)
-        stop_btn.clicked.connect(self.stop_playback)
-        controls.addWidget(stop_btn)
-        layout.addLayout(controls)
+        axis_form.addRow("Axis flips", self.axis_flip_combo)
+        controls_layout.addLayout(axis_form)
 
-        seed_row = QtWidgets.QHBoxLayout()
-        seed_row.addWidget(QtWidgets.QLabel("Seed count"))
+        seed_group = QtWidgets.QHBoxLayout()
+        seed_group.addWidget(QtWidgets.QLabel("Seed count"))
         self.seed_spin = QtWidgets.QSpinBox(self)
         self.seed_spin.setRange(1, 5000)
         self.seed_spin.setValue(200)
-        seed_row.addWidget(self.seed_spin)
-        seed_btn = QtWidgets.QPushButton("Seed from contour", self)
-        seed_btn.clicked.connect(self._on_seed_clicked)
-        seed_row.addWidget(seed_btn)
-        seed_row.addStretch(1)
-        self.phase_label = QtWidgets.QLabel("Phase: -")
-        seed_row.addWidget(self.phase_label)
-        layout.addLayout(seed_row)
+        seed_group.addWidget(self.seed_spin)
+        seed_mv_btn = QtWidgets.QPushButton("Seed from MV", self)
+        seed_mv_btn.clicked.connect(self._on_seed_mv_clicked)
+        seed_group.addWidget(seed_mv_btn)
+        seed_contour_btn = QtWidgets.QPushButton("Seed from contour", self)
+        seed_contour_btn.clicked.connect(self._on_seed_contour_clicked)
+        seed_group.addWidget(seed_contour_btn)
+        controls_layout.addLayout(seed_group)
 
+        timing_group = QtWidgets.QFormLayout()
+        self.seed_phase_spin = QtWidgets.QSpinBox(self)
+        self.seed_phase_spin.setRange(1, 1)
+        timing_group.addRow("Seed phase", self.seed_phase_spin)
+        self.particle_cycle_spin = QtWidgets.QSpinBox(self)
+        self.particle_cycle_spin.setRange(1, 20)
+        self.particle_cycle_spin.setValue(1)
+        timing_group.addRow("Particle cycles", self.particle_cycle_spin)
+        controls_layout.addLayout(timing_group)
+
+        self.streamline_check = QtWidgets.QCheckBox("Show pathline", self)
+        self.streamline_check.setChecked(False)
+        self.streamline_check.toggled.connect(self._on_streamline_toggle)
+        controls_layout.addWidget(self.streamline_check)
+        controls_layout.addStretch(1)
+
+        top_row.addWidget(controls_widget, 1)
         self.view = StreamlineWindow(parent=self)
-        layout.addWidget(self.view)
+        self.view.set_particles_enabled(True, interval_ms=50)
+        self.view.set_show_streamlines(False)
+        top_row.addWidget(self.view, 2)
+        layout.addLayout(top_row)
+
+        phase_row = QtWidgets.QHBoxLayout()
+        self.phase_label = QtWidgets.QLabel("Phase: -")
+        phase_row.addWidget(self.phase_label)
+        self.phase_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.phase_slider.setRange(1, 1)
+        self.phase_slider.setSingleStep(1)
+        self.phase_slider.valueChanged.connect(self.set_phase)
+        phase_row.addWidget(self.phase_slider)
+        layout.addLayout(phase_row)
 
     def set_phase_count(self, count: int) -> None:
         count = max(1, int(count))
-        self.start_phase_spin.setRange(1, count)
+        self.phase_slider.setRange(1, count)
+        self.seed_phase_spin.setRange(1, count)
 
     def axis_order(self) -> str:
         return self.axis_order_combo.currentText()
@@ -530,39 +662,32 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         ]
         return flip_options[self.axis_flip_combo.currentIndex()]
 
-    def use_contour_seed(self) -> bool:
-        return self._use_contour_seed
+    def seed_mode(self) -> str:
+        return self._seed_mode
+
+    def seed_phase(self) -> int:
+        return int(self.seed_phase_spin.value())
+
+    def particle_cycles(self) -> int:
+        return int(self.particle_cycle_spin.value())
 
     def set_phase(self, phase: int) -> None:
         self._phase = int(phase)
         self.phase_label.setText(f"Phase: {self._phase}")
+        if self.phase_slider.value() != self._phase:
+            self.phase_slider.setValue(self._phase)
         self.phase_changed.emit(self._phase)
 
-    def start_playback(self) -> None:
-        self._start_phase = int(self.start_phase_spin.value())
-        cycles = int(self.cycle_spin.value())
-        self._total_steps = max(1, cycles) * max(1, self.start_phase_spin.maximum())
-        self._step_index = 0
-        self._timer.start(int(self.interval_spin.value()))
-        self.set_phase(self._start_phase)
-
-    def stop_playback(self) -> None:
-        self._timer.stop()
-
-    def _advance_phase(self) -> None:
-        phase_count = int(self.start_phase_spin.maximum())
-        if phase_count <= 0:
-            return
-        self._step_index += 1
-        if self._step_index >= self._total_steps:
-            self.stop_playback()
-            return
-        phase = ((self._start_phase - 1 + self._step_index) % phase_count) + 1
-        self.set_phase(phase)
-
-    def _on_seed_clicked(self) -> None:
-        self._use_contour_seed = True
+    def _on_seed_mv_clicked(self) -> None:
+        self._seed_mode = "mv"
         self.seed_requested.emit(int(self.seed_spin.value()))
+
+    def _on_seed_contour_clicked(self) -> None:
+        self._seed_mode = "contour"
+        self.seed_requested.emit(int(self.seed_spin.value()))
+
+    def _on_streamline_toggle(self, checked: bool) -> None:
+        self.view.set_show_streamlines(bool(checked))
 
 
 class StreamlineTabbedWindow(QtWidgets.QWidget):
@@ -577,8 +702,3 @@ class StreamlineTabbedWindow(QtWidgets.QWidget):
         self.player = StreamlinePlayerWindow(parent=self)
         self.tabs.addTab(self.gallery, "Gallery view")
         self.tabs.addTab(self.player, "Single view")
-
-        self.gallery.open_single_view.connect(self._show_single_view_tab)
-
-    def _show_single_view_tab(self) -> None:
-        self.tabs.setCurrentWidget(self.player)
