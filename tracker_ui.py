@@ -3171,7 +3171,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         tabbed.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         gallery = tabbed.gallery
         player = tabbed.player
-        gallery.seed_requested.connect(lambda count, g=gallery: self._seed_streamlines_from_contour(g, count))
+        gallery.streamline_visibility_changed.connect(
+            lambda visible, g=gallery: self._on_streamline_gallery_visibility(g, visible)
+        )
         player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         tabbed.destroyed.connect(
@@ -3185,7 +3187,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         tabbed.showMaximized()
         tabbed.raise_()
         tabbed.activateWindow()
-        QtCore.QTimer.singleShot(0, lambda g=gallery: self._update_streamline_gallery(g))
         QtCore.QTimer.singleShot(
             0, lambda p=player, phase=int(self.slider.value()): self._update_streamline_player(p, phase)
         )
@@ -3195,6 +3196,15 @@ class ValveTracker(QtWidgets.QMainWindow):
             self._streamline_galleries.remove(gallery)
         except ValueError:
             pass
+
+    def _on_streamline_gallery_visibility(self, gallery, visible: bool) -> None:
+        if visible:
+            self._update_streamline_gallery(gallery)
+        else:
+            try:
+                gallery.clear_streamlines()
+            except Exception:
+                pass
 
     def _open_streamline_player(self) -> None:
         if self._vel_raw is None:
@@ -3229,11 +3239,13 @@ class ValveTracker(QtWidgets.QMainWindow):
 
     def _update_streamline_galleries(self) -> None:
         for gallery in list(self._streamline_galleries):
-            if gallery is None or not gallery.isVisible():
+            if gallery is None or not gallery.isVisible() or not gallery.show_streamlines():
                 continue
             self._update_streamline_gallery(gallery)
 
     def _update_streamline_gallery(self, gallery) -> None:
+        if gallery is None or not gallery.show_streamlines():
+            return
         t = int(self.slider.value()) - 1
         if t < 0 or t >= self.Nt:
             return

@@ -443,7 +443,7 @@ class StreamlineWindow(QtWidgets.QWidget):
 
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
-    seed_requested = QtCore.Signal(int)
+    streamline_visibility_changed = QtCore.Signal(bool)
 
     def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
         super().__init__(parent)
@@ -452,6 +452,7 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         self._syncing_camera = False
         self._seed_phase = None
         self._seed_points = None
+        self._show_streamlines = False
 
         scroll = QtWidgets.QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -486,17 +487,27 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         scroll.setWidget(container)
         layout = QtWidgets.QVBoxLayout(self)
         control_row = QtWidgets.QHBoxLayout()
-        control_row.addWidget(QtWidgets.QLabel("Seed count"))
-        self.seed_spin = QtWidgets.QSpinBox(self)
-        self.seed_spin.setRange(1, 5000)
-        self.seed_spin.setValue(200)
-        control_row.addWidget(self.seed_spin)
-        seed_btn = QtWidgets.QPushButton("Seed from contour", self)
-        seed_btn.clicked.connect(lambda: self.seed_requested.emit(self.seed_spin.value()))
-        control_row.addWidget(seed_btn)
+        self.show_streamlines_btn = QtWidgets.QPushButton("Show streamlines", self)
+        self.show_streamlines_btn.setCheckable(True)
+        self.show_streamlines_btn.clicked.connect(self._toggle_streamlines)
+        control_row.addWidget(self.show_streamlines_btn)
         control_row.addStretch(1)
         layout.addLayout(control_row)
         layout.addWidget(scroll)
+
+    def show_streamlines(self) -> bool:
+        return self._show_streamlines
+
+    def _toggle_streamlines(self, checked: bool) -> None:
+        self._show_streamlines = bool(checked)
+        label = "Hide streamlines" if self._show_streamlines else "Show streamlines"
+        self.show_streamlines_btn.setText(label)
+        self.streamline_visibility_changed.emit(self._show_streamlines)
+
+    def clear_streamlines(self) -> None:
+        for view, _order, _flips in self.views:
+            view.update_streamlines([], None)
+            view.update_contour(None, None)
 
     def set_seed_points(self, seed_points, phase: int):
         self._seed_points = None if seed_points is None else np.asarray(seed_points, dtype=np.float32)
