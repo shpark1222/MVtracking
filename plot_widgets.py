@@ -162,6 +162,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_step = 0
         self._particle_cycles = 1
         self._particle_cycle_index = 0
+        self._particle_hold_frames = 0
 
         self._build_view()
 
@@ -371,6 +372,12 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_cycle_index = 0
         self._particle_step = 0
 
+    def set_particle_hold_frames(self, hold_frames: int) -> None:
+        hold_frames = max(0, int(hold_frames))
+        if self._particle_hold_frames == hold_frames:
+            return
+        self._particle_hold_frames = hold_frames
+
     def _update_particles(self, prepared_streamlines) -> None:
         if not self._particles_enabled:
             return
@@ -382,9 +389,9 @@ class StreamlineWindow(QtWidgets.QWidget):
         for pts, stream_colors in prepared_streamlines:
             if pts.size == 0:
                 continue
-            if self._particle_step >= pts.shape[0]:
+            if self._particle_step >= pts.shape[0] + self._particle_hold_frames:
                 continue
-            idx = self._particle_step
+            idx = min(self._particle_step, pts.shape[0] - 1)
             positions.append(pts[idx])
             if stream_colors is None or stream_colors.shape[0] != pts.shape[0]:
                 colors.append([1.0, 1.0, 1.0, 0.9])
@@ -402,7 +409,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         if max_len <= 1:
             return
         next_step = self._particle_step + 1
-        if next_step >= max_len:
+        if next_step >= max_len + self._particle_hold_frames:
             self._particle_cycle_index += 1
             if self._particle_cycle_index >= self._particle_cycles:
                 self._particle_timer.stop()
@@ -616,6 +623,10 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.particle_cycle_spin.setRange(1, 20)
         self.particle_cycle_spin.setValue(1)
         timing_group.addRow("Particle cycles", self.particle_cycle_spin)
+        self.particle_hold_spin = QtWidgets.QSpinBox(self)
+        self.particle_hold_spin.setRange(0, 200)
+        self.particle_hold_spin.setValue(0)
+        timing_group.addRow("Hold at end (frames)", self.particle_hold_spin)
         controls_layout.addLayout(timing_group)
 
         self.streamline_check = QtWidgets.QCheckBox("Show pathline", self)
@@ -628,6 +639,8 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.view = StreamlineWindow(parent=self)
         self.view.set_particles_enabled(True, interval_ms=50)
         self.view.set_show_streamlines(False)
+        self.view.set_particle_hold_frames(self.particle_hold_spin.value())
+        self.particle_hold_spin.valueChanged.connect(self.view.set_particle_hold_frames)
         top_row.addWidget(self.view, 2)
         layout.addLayout(top_row)
 
