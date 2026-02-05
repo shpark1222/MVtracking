@@ -603,9 +603,9 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         seed_mv_btn = QtWidgets.QPushButton("Seed from MV", self)
         seed_mv_btn.clicked.connect(self._on_seed_mv_clicked)
         seed_group.addWidget(seed_mv_btn)
-        seed_contour_btn = QtWidgets.QPushButton("Seed from contour", self)
-        seed_contour_btn.clicked.connect(self._on_seed_contour_clicked)
-        seed_group.addWidget(seed_contour_btn)
+        stop_particles_btn = QtWidgets.QPushButton("Stop", self)
+        stop_particles_btn.clicked.connect(self._on_stop_particles_clicked)
+        seed_group.addWidget(stop_particles_btn)
         controls_layout.addLayout(seed_group)
 
         timing_group = QtWidgets.QFormLayout()
@@ -682,9 +682,8 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self._seed_mode = "mv"
         self.seed_requested.emit(int(self.seed_spin.value()))
 
-    def _on_seed_contour_clicked(self) -> None:
-        self._seed_mode = "contour"
-        self.seed_requested.emit(int(self.seed_spin.value()))
+    def _on_stop_particles_clicked(self) -> None:
+        self.view.set_particles_enabled(False)
 
     def _on_streamline_toggle(self, checked: bool) -> None:
         self.view.set_show_streamlines(bool(checked))

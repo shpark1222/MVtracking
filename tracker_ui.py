@@ -3288,14 +3288,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if axis_order != "XYZ" or any(axis_flips):
             vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
         contour_voxel = self._streamline_contour_voxel(t)
-        if player.seed_mode() == "contour":
-            seed_points = self._contour_seed_voxels(t, int(player.seed_spin.value()))
-            if seed_points is None or seed_points.size == 0:
-                streamlines = []
-            else:
-                streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
-        else:
-            streamlines = self._compute_streamlines(vel_t, mask)
+        streamlines = self._compute_streamlines(vel_t, mask)
         player.view.set_particle_cycles(player.particle_cycles())
         player.view.update_streamlines(streamlines, mask.shape)
         player.view.update_contour(contour_voxel, mask.shape)
@@ -3492,22 +3485,6 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available for the current phase."
             )
             return
-        if player.seed_mode() == "contour":
-            seed_voxel = self._contour_seed_voxels(t, seed_count)
-            if seed_voxel is None or seed_voxel.size == 0:
-                QtWidgets.QMessageBox.information(
-                    self, "MV tracker", "No PCMRA contour available for seeding."
-                )
-                return
-            valid_seeds = []
-            for seed in seed_voxel:
-                if self._point_in_mask(seed, mask):
-                    valid_seeds.append(seed)
-            if not valid_seeds:
-                QtWidgets.QMessageBox.information(
-                    self, "MV tracker", "No contour seeds overlap the current mask."
-                )
-                return
         player.set_phase(phase)
 
     def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
