@@ -353,6 +353,7 @@ class StreamlineWindow(QtWidgets.QWidget):
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
     seed_requested = QtCore.Signal(int)
+    open_single_view = QtCore.Signal()
 
     def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
         super().__init__(parent)
@@ -403,6 +404,9 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         seed_btn = QtWidgets.QPushButton("Seed from contour", self)
         seed_btn.clicked.connect(lambda: self.seed_requested.emit(self.seed_spin.value()))
         control_row.addWidget(seed_btn)
+        open_btn = QtWidgets.QPushButton("Open single view", self)
+        open_btn.clicked.connect(self.open_single_view.emit)
+        control_row.addWidget(open_btn)
         control_row.addStretch(1)
         layout.addLayout(control_row)
         layout.addWidget(scroll)
@@ -427,3 +431,135 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
                 view.set_camera_state(state)
         finally:
             self._syncing_camera = False
+
+
+class StreamlinePlayerWindow(QtWidgets.QWidget):
+    phase_changed = QtCore.Signal(int)
+    seed_requested = QtCore.Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Streamline Player")
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._advance_phase)
+        self._total_steps = 0
+        self._step_index = 0
+        self._start_phase = 1
+        self._phase = 1
+        self._use_contour_seed = False
+
+        layout = QtWidgets.QVBoxLayout(self)
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel("Axis order"))
+        self.axis_order_combo = QtWidgets.QComboBox(self)
+        self.axis_order_combo.addItems(["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"])
+        self.axis_order_combo.currentTextChanged.connect(lambda _val: self.phase_changed.emit(self._phase))
+        controls.addWidget(self.axis_order_combo)
+        controls.addWidget(QtWidgets.QLabel("Axis flips"))
+        self.axis_flip_combo = QtWidgets.QComboBox(self)
+        self.axis_flip_combo.addItems(
+            [
+                "None",
+                "Flip X",
+                "Flip Y",
+                "Flip Z",
+                "Flip X,Y",
+                "Flip X,Z",
+                "Flip Y,Z",
+                "Flip X,Y,Z",
+            ]
+        )
+        self.axis_flip_combo.currentTextChanged.connect(lambda _val: self.phase_changed.emit(self._phase))
+        controls.addWidget(self.axis_flip_combo)
+        controls.addWidget(QtWidgets.QLabel("Start phase"))
+        self.start_phase_spin = QtWidgets.QSpinBox(self)
+        self.start_phase_spin.setRange(1, 1)
+        controls.addWidget(self.start_phase_spin)
+        controls.addWidget(QtWidgets.QLabel("Cycles"))
+        self.cycle_spin = QtWidgets.QSpinBox(self)
+        self.cycle_spin.setRange(1, 20)
+        self.cycle_spin.setValue(1)
+        controls.addWidget(self.cycle_spin)
+        controls.addWidget(QtWidgets.QLabel("Interval (ms)"))
+        self.interval_spin = QtWidgets.QSpinBox(self)
+        self.interval_spin.setRange(10, 5000)
+        self.interval_spin.setValue(150)
+        controls.addWidget(self.interval_spin)
+        play_btn = QtWidgets.QPushButton("Play", self)
+        play_btn.clicked.connect(self.start_playback)
+        controls.addWidget(play_btn)
+        stop_btn = QtWidgets.QPushButton("Stop", self)
+        stop_btn.clicked.connect(self.stop_playback)
+        controls.addWidget(stop_btn)
+        layout.addLayout(controls)
+
+        seed_row = QtWidgets.QHBoxLayout()
+        seed_row.addWidget(QtWidgets.QLabel("Seed count"))
+        self.seed_spin = QtWidgets.QSpinBox(self)
+        self.seed_spin.setRange(1, 5000)
+        self.seed_spin.setValue(200)
+        seed_row.addWidget(self.seed_spin)
+        seed_btn = QtWidgets.QPushButton("Seed from contour", self)
+        seed_btn.clicked.connect(self._on_seed_clicked)
+        seed_row.addWidget(seed_btn)
+        seed_row.addStretch(1)
+        self.phase_label = QtWidgets.QLabel("Phase: -")
+        seed_row.addWidget(self.phase_label)
+        layout.addLayout(seed_row)
+
+        self.view = StreamlineWindow(parent=self)
+        layout.addWidget(self.view)
+
+    def set_phase_count(self, count: int) -> None:
+        count = max(1, int(count))
+        self.start_phase_spin.setRange(1, count)
+
+    def axis_order(self) -> str:
+        return self.axis_order_combo.currentText()
+
+    def axis_flips(self) -> tuple:
+        flip_options = [
+            (False, False, False),
+            (True, False, False),
+            (False, True, False),
+            (False, False, True),
+            (True, True, False),
+            (True, False, True),
+            (False, True, True),
+            (True, True, True),
+        ]
+        return flip_options[self.axis_flip_combo.currentIndex()]
+
+    def use_contour_seed(self) -> bool:
+        return self._use_contour_seed
+
+    def set_phase(self, phase: int) -> None:
+        self._phase = int(phase)
+        self.phase_label.setText(f"Phase: {self._phase}")
+        self.phase_changed.emit(self._phase)
+
+    def start_playback(self) -> None:
+        self._start_phase = int(self.start_phase_spin.value())
+        cycles = int(self.cycle_spin.value())
+        self._total_steps = max(1, cycles) * max(1, self.start_phase_spin.maximum())
+        self._step_index = 0
+        self._timer.start(int(self.interval_spin.value()))
+        self.set_phase(self._start_phase)
+
+    def stop_playback(self) -> None:
+        self._timer.stop()
+
+    def _advance_phase(self) -> None:
+        phase_count = int(self.start_phase_spin.maximum())
+        if phase_count <= 0:
+            return
+        self._step_index += 1
+        if self._step_index >= self._total_steps:
+            self.stop_playback()
+            return
+        phase = ((self._start_phase - 1 + self._step_index) % phase_count) + 1
+        self.set_phase(phase)
+
+    def _on_seed_clicked(self) -> None:
+        self._use_contour_seed = True
+        self.seed_requested.emit(int(self.seed_spin.value()))
