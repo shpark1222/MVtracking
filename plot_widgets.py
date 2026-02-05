@@ -404,7 +404,7 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
         seed_btn = QtWidgets.QPushButton("Seed from contour", self)
         seed_btn.clicked.connect(lambda: self.seed_requested.emit(self.seed_spin.value()))
         control_row.addWidget(seed_btn)
-        open_btn = QtWidgets.QPushButton("Open single view", self)
+        open_btn = QtWidgets.QPushButton("Open single view tab", self)
         open_btn.clicked.connect(self.open_single_view.emit)
         control_row.addWidget(open_btn)
         control_row.addStretch(1)
@@ -563,3 +563,22 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
     def _on_seed_clicked(self) -> None:
         self._use_contour_seed = True
         self.seed_requested.emit(int(self.seed_spin.value()))
+
+
+class StreamlineTabbedWindow(QtWidgets.QWidget):
+    def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
+        super().__init__(parent)
+        self.setWindowTitle("Streamline Viewer")
+        layout = QtWidgets.QVBoxLayout(self)
+        self.tabs = QtWidgets.QTabWidget(self)
+        layout.addWidget(self.tabs)
+
+        self.gallery = StreamlineGalleryWindow(axis_orders, axis_flips, parent=self, columns=columns)
+        self.player = StreamlinePlayerWindow(parent=self)
+        self.tabs.addTab(self.gallery, "Gallery view")
+        self.tabs.addTab(self.player, "Single view")
+
+        self.gallery.open_single_view.connect(self._show_single_view_tab)
+
+    def _show_single_view_tab(self) -> None:
+        self.tabs.setCurrentWidget(self.player)
