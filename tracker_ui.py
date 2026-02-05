@@ -3172,7 +3172,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         gallery = tabbed.gallery
         player = tabbed.player
         gallery.seed_requested.connect(lambda count, g=gallery: self._seed_streamlines_from_contour(g, count))
-        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_from_contour_player(p, count))
+        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         tabbed.destroyed.connect(
             lambda _obj=None, t=tabbed, g=gallery, p=player: self._on_streamline_tab_closed(t, g, p)
@@ -3181,7 +3181,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._streamline_galleries.append(gallery)
         self._streamline_players.append(player)
         player.set_phase_count(self.Nt)
-        player.start_phase_spin.setValue(int(self.slider.value()))
+        player.set_phase(int(self.slider.value()))
         tabbed.showMaximized()
         tabbed.raise_()
         tabbed.activateWindow()
@@ -3203,8 +3203,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         player = StreamlinePlayerWindow(self)
         player.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         player.set_phase_count(self.Nt)
-        player.start_phase_spin.setValue(int(self.slider.value()))
-        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_from_contour_player(p, count))
+        player.set_phase(int(self.slider.value()))
+        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
         self._streamline_players.append(player)
@@ -3274,7 +3274,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if axis_order != "XYZ" or any(axis_flips):
             vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
         contour_voxel = self._streamline_contour_voxel(t)
-        if player.use_contour_seed():
+        if player.seed_mode() == "contour":
             seed_points = self._contour_seed_voxels(t, int(player.seed_spin.value()))
             if seed_points is None or seed_points.size == 0:
                 streamlines = []
@@ -3466,8 +3466,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         gallery.set_seed_points(np.array(valid_seeds, dtype=np.float32), phase=t)
         self._update_streamline_gallery(gallery)
 
-    def _seed_streamlines_from_contour_player(self, player, seed_count: int) -> None:
-        phase = int(player.start_phase_spin.value())
+    def _seed_streamlines_for_player(self, player, seed_count: int) -> None:
+        phase = int(player.phase_slider.value())
         t = phase - 1
         if t < 0 or t >= self.Nt:
             return
@@ -3477,21 +3477,22 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No mask is available for the current phase."
             )
             return
-        seed_voxel = self._contour_seed_voxels(t, seed_count)
-        if seed_voxel is None or seed_voxel.size == 0:
-            QtWidgets.QMessageBox.information(
-                self, "MV tracker", "No PCMRA contour available for seeding."
-            )
-            return
-        valid_seeds = []
-        for seed in seed_voxel:
-            if self._point_in_mask(seed, mask):
-                valid_seeds.append(seed)
-        if not valid_seeds:
-            QtWidgets.QMessageBox.information(
-                self, "MV tracker", "No contour seeds overlap the current mask."
-            )
-            return
+        if player.seed_mode() == "contour":
+            seed_voxel = self._contour_seed_voxels(t, seed_count)
+            if seed_voxel is None or seed_voxel.size == 0:
+                QtWidgets.QMessageBox.information(
+                    self, "MV tracker", "No PCMRA contour available for seeding."
+                )
+                return
+            valid_seeds = []
+            for seed in seed_voxel:
+                if self._point_in_mask(seed, mask):
+                    valid_seeds.append(seed)
+            if not valid_seeds:
+                QtWidgets.QMessageBox.information(
+                    self, "MV tracker", "No contour seeds overlap the current mask."
+                )
+                return
         player.set_phase(phase)
 
     def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
