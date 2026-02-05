@@ -150,6 +150,8 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._line_items = []
         self._streamlines = []
         self._volume_shape = None
+        self._contour_item = None
+        self._contour_points = None
         self._suppress_camera_signal = False
 
         self._build_view()
@@ -194,6 +196,8 @@ class StreamlineWindow(QtWidgets.QWidget):
             layout.addWidget(self.view)
         if self._streamlines and self._volume_shape is not None:
             self.update_streamlines(self._streamlines, self._volume_shape)
+        if self._contour_points is not None and self._volume_shape is not None:
+            self.update_contour(self._contour_points, self._volume_shape)
         return True
 
     def _on_view_camera_changed(self):
@@ -233,6 +237,15 @@ class StreamlineWindow(QtWidgets.QWidget):
             except Exception:
                 pass
         self._line_items = []
+
+    def clear_contour(self):
+        if self._contour_item is None:
+            return
+        try:
+            self.view.removeItem(self._contour_item)
+        except Exception:
+            pass
+        self._contour_item = None
 
     def update_streamlines(self, streamlines, volume_shape):
         self.clear_streamlines()
@@ -285,6 +298,28 @@ class StreamlineWindow(QtWidgets.QWidget):
             self.view.addItem(item)
             self._line_items.append(item)
 
+    def update_contour(self, contour_points, volume_shape):
+        self.clear_contour()
+        self._volume_shape = volume_shape
+        self._contour_points = None if contour_points is None else np.asarray(contour_points, dtype=np.float32)
+        if self._contour_points is None or self._contour_points.size == 0:
+            return
+        if self._contour_points.ndim != 2 or self._contour_points.shape[1] != 3:
+            return
+        pts = self._transform_points(self._contour_points, volume_shape)
+        if pts.shape[0] < 2:
+            return
+        pts = np.vstack([pts, pts[0]])
+        self._update_view_center(volume_shape)
+        self._contour_item = gl.GLLinePlotItem(
+            pos=pts,
+            color=(1.0, 1.0, 1.0, 0.9),
+            width=2.0,
+            antialias=True,
+            mode="line_strip",
+        )
+        self.view.addItem(self._contour_item)
+
     def _update_view_center(self, volume_shape):
         if volume_shape is None:
             return
@@ -317,11 +352,15 @@ class StreamlineWindow(QtWidgets.QWidget):
 
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
+    seed_requested = QtCore.Signal(int)
+
     def __init__(self, axis_orders, axis_flips, parent=None, columns: int = 4):
         super().__init__(parent)
         self.setWindowTitle("Streamline Gallery")
         self.views = []
         self._syncing_camera = False
+        self._seed_phase = None
+        self._seed_points = None
 
         scroll = QtWidgets.QScrollArea(self)
         scroll.setWidgetResizable(True)
@@ -355,7 +394,27 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
 
         scroll.setWidget(container)
         layout = QtWidgets.QVBoxLayout(self)
+        control_row = QtWidgets.QHBoxLayout()
+        control_row.addWidget(QtWidgets.QLabel("Seed count"))
+        self.seed_spin = QtWidgets.QSpinBox(self)
+        self.seed_spin.setRange(1, 5000)
+        self.seed_spin.setValue(200)
+        control_row.addWidget(self.seed_spin)
+        seed_btn = QtWidgets.QPushButton("Seed from contour", self)
+        seed_btn.clicked.connect(lambda: self.seed_requested.emit(self.seed_spin.value()))
+        control_row.addWidget(seed_btn)
+        control_row.addStretch(1)
+        layout.addLayout(control_row)
         layout.addWidget(scroll)
+
+    def set_seed_points(self, seed_points, phase: int):
+        self._seed_points = None if seed_points is None else np.asarray(seed_points, dtype=np.float32)
+        self._seed_phase = phase
+
+    def seed_points_for_phase(self, phase: int):
+        if self._seed_points is None or self._seed_phase != phase:
+            return None
+        return self._seed_points
 
     def _sync_camera(self, source_view, state):
         if self._syncing_camera:
