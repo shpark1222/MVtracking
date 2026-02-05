@@ -34,7 +34,7 @@ from stl_conversion import (
     write_stl_from_patient_contour_extruded,
 )
 from mvpack_io import MVPack, CineGeom, VolGeom, load_mrstruct, load_mvpack_h5
-from plot_widgets import PlotCanvas, StreamlineGalleryWindow, _WheelToSliderFilter
+from plot_widgets import PlotCanvas, StreamlineGalleryWindow, StreamlinePlayerWindow, _WheelToSliderFilter
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
     mvtrack_path_for_folder,
@@ -155,6 +155,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_circle_pcm = None
         self.line_circle_vel = None
         self._streamline_galleries = []
+        self._streamline_players = []
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -3161,6 +3162,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         flips = list(itertools.product([False, True], repeat=3))
         gallery = StreamlineGalleryWindow(orders, flips)
         gallery.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        gallery.seed_requested.connect(lambda count, g=gallery: self._seed_streamlines_from_contour(g, count))
+        gallery.open_single_view.connect(self._open_streamline_player)
         gallery.destroyed.connect(lambda _obj=None, g=gallery: self._on_streamline_gallery_closed(g))
         self._streamline_galleries.append(gallery)
         gallery.showMaximized()
@@ -3171,6 +3174,29 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _on_streamline_gallery_closed(self, gallery):
         try:
             self._streamline_galleries.remove(gallery)
+        except ValueError:
+            pass
+
+    def _open_streamline_player(self) -> None:
+        if self._vel_raw is None:
+            QtWidgets.QMessageBox.warning(self, "MV tracker", "Load mvpack before viewing streamlines.")
+            return
+        player = StreamlinePlayerWindow(self)
+        player.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        player.set_phase_count(self.Nt)
+        player.start_phase_spin.setValue(int(self.slider.value()))
+        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_from_contour_player(p, count))
+        player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
+        player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
+        self._streamline_players.append(player)
+        player.show()
+        player.raise_()
+        player.activateWindow()
+        player.set_phase(int(self.slider.value()))
+
+    def _on_streamline_player_closed(self, player):
+        try:
+            self._streamline_players.remove(player)
         except ValueError:
             pass
 
@@ -3191,12 +3217,46 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        contour_voxel = self._streamline_contour_voxel(t)
+        seed_points = gallery.seed_points_for_phase(t) if gallery is not None else None
         for window, axis_order, axis_flips in gallery.views:
             vel_t = base_vel
             if axis_order != "XYZ" or any(axis_flips):
                 vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
-            streamlines = self._compute_streamlines(vel_t, mask)
+            if seed_points is not None:
+                streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
+            else:
+                streamlines = self._compute_streamlines(vel_t, mask)
             window.update_streamlines(streamlines, mask.shape)
+            window.update_contour(contour_voxel, mask.shape)
+
+    def _update_streamline_player(self, player, phase: int) -> None:
+        t = int(phase) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        mask = self._current_vel_mask(t)
+        if mask is None or not np.any(mask):
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No mask is available for the current phase."
+            )
+            return
+        base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+        axis_order = player.axis_order()
+        axis_flips = player.axis_flips()
+        vel_t = base_vel
+        if axis_order != "XYZ" or any(axis_flips):
+            vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+        contour_voxel = self._streamline_contour_voxel(t)
+        if player.use_contour_seed():
+            seed_points = self._contour_seed_voxels(t, int(player.seed_spin.value()))
+            if seed_points is None or seed_points.size == 0:
+                streamlines = []
+            else:
+                streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
+        else:
+            streamlines = self._compute_streamlines(vel_t, mask)
+        player.view.update_streamlines(streamlines, mask.shape)
+        player.view.update_contour(contour_voxel, mask.shape)
 
     def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
         if self._vel_mask is None:
@@ -3220,6 +3280,28 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         streamlines = []
         for seed in seed_points:
+            line = self._integrate_streamline(vel_t, mask, seed.astype(np.float32), step_size, max_steps)
+            if line is not None and line.shape[0] >= min_steps:
+                speeds = np.array(
+                    [float(np.linalg.norm(self._sample_velocity_at(vel_t, pos))) for pos in line],
+                    dtype=np.float32,
+                )
+                streamlines.append((line, speeds))
+        return streamlines
+
+    def _compute_streamlines_from_seeds(
+        self, vel_t: np.ndarray, mask: np.ndarray, seed_points: np.ndarray
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        step_size = 0.6
+        max_steps = 200
+        min_steps = 20
+        seed_points = np.asarray(seed_points, dtype=np.float32)
+        if seed_points.size == 0:
+            return []
+        streamlines = []
+        for seed in seed_points:
+            if not self._point_in_mask(seed, mask):
+                continue
             line = self._integrate_streamline(vel_t, mask, seed.astype(np.float32), step_size, max_steps)
             if line is not None and line.shape[0] >= min_steps:
                 speeds = np.array(
@@ -3272,6 +3354,118 @@ class ValveTracker(QtWidgets.QMainWindow):
         if len(points) <= 1:
             return None
         return np.vstack(points)
+
+    def _streamline_contour_voxel(self, t: int) -> Optional[np.ndarray]:
+        if self.active_cine_key not in self.pack.cine_planes:
+            return None
+        contour_xy = self._roi_contour_points((self.Npix, self.Npix), t=t)
+        if contour_xy is None or contour_xy.size == 0:
+            return None
+        line_xy = self._get_active_line_abs_raw(t)
+        cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
+        angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
+        contour_pts = contour_xy.copy()
+        contour_pts[:, 1] = (self.Npix - 1) - contour_pts[:, 1]
+        contour_xyz = self._pcmra_contour_patient_xyz(
+            contour_pts=contour_pts,
+            line_xy=line_xy,
+            cine_geom=cine_geom,
+            cine_shape=cine_img_raw.shape,
+            angle_deg=angle_deg,
+        )
+        if contour_xyz is None or contour_xyz.size == 0:
+            return None
+        return self._patient_to_voxel(contour_xyz)
+
+    def _contour_seed_voxels(self, t: int, seed_count: int) -> Optional[np.ndarray]:
+        contour_xy = self._roi_contour_points((self.Npix, self.Npix), t=t)
+        if contour_xy is None or contour_xy.size == 0:
+            return None
+        contour_mask = polygon_mask((self.Npix, self.Npix), contour_xy)
+        candidates = np.argwhere(contour_mask)
+        if candidates.size == 0:
+            return None
+        count = int(seed_count)
+        if candidates.shape[0] > count:
+            idx = np.random.choice(candidates.shape[0], size=count, replace=False)
+            candidates = candidates[idx]
+        seed_xy = np.column_stack([candidates[:, 1], candidates[:, 0]]).astype(np.float64)
+        if self.active_cine_key not in self.pack.cine_planes:
+            return None
+        line_xy = self._get_active_line_abs_raw(t)
+        cine_geom = self._get_cine_geom_raw(self.active_cine_key)
+        cine_img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
+        angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
+        seed_pts = seed_xy.copy()
+        seed_pts[:, 1] = (self.Npix - 1) - seed_pts[:, 1]
+        seed_xyz = self._pcmra_contour_patient_xyz(
+            contour_pts=seed_pts,
+            line_xy=line_xy,
+            cine_geom=cine_geom,
+            cine_shape=cine_img_raw.shape,
+            angle_deg=angle_deg,
+        )
+        if seed_xyz is None or seed_xyz.size == 0:
+            return None
+        seed_voxel = self._patient_to_voxel(seed_xyz)
+        return seed_voxel
+
+    def _seed_streamlines_from_contour(self, gallery, seed_count: int) -> None:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        mask = self._current_vel_mask(t)
+        if mask is None or not np.any(mask):
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No mask is available for the current phase."
+            )
+            return
+        seed_voxel = self._contour_seed_voxels(t, seed_count)
+        if seed_voxel is None or seed_voxel.size == 0:
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No PCMRA contour available for seeding."
+            )
+            return
+        valid_seeds = []
+        for seed in seed_voxel:
+            if self._point_in_mask(seed, mask):
+                valid_seeds.append(seed)
+        if not valid_seeds:
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No contour seeds overlap the current mask."
+            )
+            return
+        gallery.set_seed_points(np.array(valid_seeds, dtype=np.float32), phase=t)
+        self._update_streamline_gallery(gallery)
+
+    def _seed_streamlines_from_contour_player(self, player, seed_count: int) -> None:
+        phase = int(player.start_phase_spin.value())
+        t = phase - 1
+        if t < 0 or t >= self.Nt:
+            return
+        mask = self._current_vel_mask(t)
+        if mask is None or not np.any(mask):
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No mask is available for the current phase."
+            )
+            return
+        seed_voxel = self._contour_seed_voxels(t, seed_count)
+        if seed_voxel is None or seed_voxel.size == 0:
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No PCMRA contour available for seeding."
+            )
+            return
+        valid_seeds = []
+        for seed in seed_voxel:
+            if self._point_in_mask(seed, mask):
+                valid_seeds.append(seed)
+        if not valid_seeds:
+            QtWidgets.QMessageBox.information(
+                self, "MV tracker", "No contour seeds overlap the current mask."
+            )
+            return
+        player.set_phase(phase)
 
     def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
         coords = np.array([[pos[0]], [pos[1]], [pos[2]]], dtype=np.float32)
