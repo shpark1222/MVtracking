@@ -3184,6 +3184,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._streamline_players.append(player)
         player.set_phase_count(self.Nt)
         player.set_phase(int(self.slider.value()))
+        player.seed_phase_spin.setValue(int(self.slider.value()))
         tabbed.showMaximized()
         tabbed.raise_()
         tabbed.activateWindow()
@@ -3214,6 +3215,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
         player.set_phase_count(self.Nt)
         player.set_phase(int(self.slider.value()))
+        player.seed_phase_spin.setValue(int(self.slider.value()))
         player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
@@ -3294,6 +3296,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                 streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
         else:
             streamlines = self._compute_streamlines(vel_t, mask)
+        player.view.set_particle_cycles(player.particle_cycles())
         player.view.update_streamlines(streamlines, mask.shape)
         player.view.update_contour(contour_voxel, mask.shape)
 
@@ -3479,7 +3482,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._update_streamline_gallery(gallery)
 
     def _seed_streamlines_for_player(self, player, seed_count: int) -> None:
-        phase = int(player.phase_slider.value())
+        phase = int(player.seed_phase())
         t = phase - 1
         if t < 0 or t >= self.Nt:
             return

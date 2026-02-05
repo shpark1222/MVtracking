@@ -160,6 +160,8 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_timer = QtCore.QTimer(self)
         self._particle_timer.timeout.connect(self._advance_particles)
         self._particle_step = 0
+        self._particle_cycles = 1
+        self._particle_cycle_index = 0
 
         self._build_view()
 
@@ -255,6 +257,8 @@ class StreamlineWindow(QtWidgets.QWidget):
             pass
         self._particle_item = None
         self._particle_timer.stop()
+        self._particle_step = 0
+        self._particle_cycle_index = 0
 
     def clear_contour(self):
         if self._contour_item is None:
@@ -270,6 +274,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._volume_shape = volume_shape
         self._streamlines = list(streamlines) if streamlines is not None else []
         self._particle_step = 0
+        self._particle_cycle_index = 0
         if not self._streamlines:
             self._update_particles([])
             return
@@ -358,6 +363,14 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_timer.start()
         self._update_particles(self._prepared_streamlines)
 
+    def set_particle_cycles(self, cycles: int) -> None:
+        cycles = max(1, int(cycles))
+        if self._particle_cycles == cycles:
+            return
+        self._particle_cycles = cycles
+        self._particle_cycle_index = 0
+        self._particle_step = 0
+
     def _update_particles(self, prepared_streamlines) -> None:
         if not self._particles_enabled:
             return
@@ -369,7 +382,9 @@ class StreamlineWindow(QtWidgets.QWidget):
         for pts, stream_colors in prepared_streamlines:
             if pts.size == 0:
                 continue
-            idx = min(self._particle_step, pts.shape[0] - 1)
+            if self._particle_step >= pts.shape[0]:
+                continue
+            idx = self._particle_step
             positions.append(pts[idx])
             if stream_colors is None or stream_colors.shape[0] != pts.shape[0]:
                 colors.append([1.0, 1.0, 1.0, 0.9])
@@ -386,7 +401,16 @@ class StreamlineWindow(QtWidgets.QWidget):
         max_len = max((pts.shape[0] for pts, _colors in self._prepared_streamlines), default=0)
         if max_len <= 1:
             return
-        self._particle_step = (self._particle_step + 1) % max_len
+        next_step = self._particle_step + 1
+        if next_step >= max_len:
+            self._particle_cycle_index += 1
+            if self._particle_cycle_index >= self._particle_cycles:
+                self._particle_timer.stop()
+                self._update_particles([])
+                return
+            self._particle_step = 0
+        else:
+            self._particle_step = next_step
         self._update_particles(self._prepared_streamlines)
 
     def update_contour(self, contour_points, volume_shape):
@@ -584,7 +608,17 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         seed_group.addWidget(seed_contour_btn)
         controls_layout.addLayout(seed_group)
 
-        self.streamline_check = QtWidgets.QCheckBox("Show streamline", self)
+        timing_group = QtWidgets.QFormLayout()
+        self.seed_phase_spin = QtWidgets.QSpinBox(self)
+        self.seed_phase_spin.setRange(1, 1)
+        timing_group.addRow("Seed phase", self.seed_phase_spin)
+        self.particle_cycle_spin = QtWidgets.QSpinBox(self)
+        self.particle_cycle_spin.setRange(1, 20)
+        self.particle_cycle_spin.setValue(1)
+        timing_group.addRow("Particle cycles", self.particle_cycle_spin)
+        controls_layout.addLayout(timing_group)
+
+        self.streamline_check = QtWidgets.QCheckBox("Show pathline", self)
         self.streamline_check.setChecked(False)
         self.streamline_check.toggled.connect(self._on_streamline_toggle)
         controls_layout.addWidget(self.streamline_check)
@@ -610,6 +644,7 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
     def set_phase_count(self, count: int) -> None:
         count = max(1, int(count))
         self.phase_slider.setRange(1, count)
+        self.seed_phase_spin.setRange(1, count)
 
     def axis_order(self) -> str:
         return self.axis_order_combo.currentText()
@@ -629,6 +664,12 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def seed_mode(self) -> str:
         return self._seed_mode
+
+    def seed_phase(self) -> int:
+        return int(self.seed_phase_spin.value())
+
+    def particle_cycles(self) -> int:
+        return int(self.particle_cycle_spin.value())
 
     def set_phase(self, phase: int) -> None:
         self._phase = int(phase)
