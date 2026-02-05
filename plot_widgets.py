@@ -1,6 +1,7 @@
 import numpy as np
 from PySide6 import QtCore, QtWidgets, QtGui
 import pyqtgraph.opengl as gl
+from typing import Optional
 
 import matplotlib
 
@@ -564,6 +565,8 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.setWindowTitle("Streamline Player")
         self._phase = 1
         self._seed_mode = "mv"
+        self._seed_points = None
+        self._seed_phase = None
 
         layout = QtWidgets.QVBoxLayout(self)
         top_row = QtWidgets.QHBoxLayout()
@@ -670,6 +673,16 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def particle_cycles(self) -> int:
         return int(self.particle_cycle_spin.value())
+
+    def set_seed_points(self, seed_points: np.ndarray, phase: int) -> None:
+        self._seed_points = None if seed_points is None else np.asarray(seed_points, dtype=np.float32)
+        self._seed_phase = int(phase)
+
+    def seed_points(self) -> Optional[np.ndarray]:
+        return self._seed_points
+
+    def seed_phase_points(self) -> Optional[int]:
+        return self._seed_phase
 
     def set_phase(self, phase: int) -> None:
         self._phase = int(phase)
