@@ -34,7 +34,13 @@ from stl_conversion import (
     write_stl_from_patient_contour_extruded,
 )
 from mvpack_io import MVPack, CineGeom, VolGeom, load_mrstruct, load_mvpack_h5
-from plot_widgets import PlotCanvas, StreamlineGalleryWindow, StreamlinePlayerWindow, _WheelToSliderFilter
+from plot_widgets import (
+    PlotCanvas,
+    StreamlineGalleryWindow,
+    StreamlinePlayerWindow,
+    StreamlineTabbedWindow,
+    _WheelToSliderFilter,
+)
 from roi_utils import closed_spline_xy, polygon_mask
 from tracking_state import (
     mvtrack_path_for_folder,
@@ -156,6 +162,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.line_circle_vel = None
         self._streamline_galleries = []
         self._streamline_players = []
+        self._streamline_tabs = []
         self._history_active = None
         self._undo_stack = []
         self._redo_stack = []
@@ -3160,16 +3167,28 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         orders = ["XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"]
         flips = list(itertools.product([False, True], repeat=3))
-        gallery = StreamlineGalleryWindow(orders, flips)
-        gallery.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        tabbed = StreamlineTabbedWindow(orders, flips)
+        tabbed.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        gallery = tabbed.gallery
+        player = tabbed.player
         gallery.seed_requested.connect(lambda count, g=gallery: self._seed_streamlines_from_contour(g, count))
-        gallery.open_single_view.connect(self._open_streamline_player)
-        gallery.destroyed.connect(lambda _obj=None, g=gallery: self._on_streamline_gallery_closed(g))
+        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_from_contour_player(p, count))
+        player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
+        tabbed.destroyed.connect(
+            lambda _obj=None, t=tabbed, g=gallery, p=player: self._on_streamline_tab_closed(t, g, p)
+        )
+        self._streamline_tabs.append(tabbed)
         self._streamline_galleries.append(gallery)
-        gallery.showMaximized()
-        gallery.raise_()
-        gallery.activateWindow()
+        self._streamline_players.append(player)
+        player.set_phase_count(self.Nt)
+        player.start_phase_spin.setValue(int(self.slider.value()))
+        tabbed.showMaximized()
+        tabbed.raise_()
+        tabbed.activateWindow()
         QtCore.QTimer.singleShot(0, lambda g=gallery: self._update_streamline_gallery(g))
+        QtCore.QTimer.singleShot(
+            0, lambda p=player, phase=int(self.slider.value()): self._update_streamline_player(p, phase)
+        )
 
     def _on_streamline_gallery_closed(self, gallery):
         try:
@@ -3199,6 +3218,14 @@ class ValveTracker(QtWidgets.QMainWindow):
             self._streamline_players.remove(player)
         except ValueError:
             pass
+
+    def _on_streamline_tab_closed(self, tabbed, gallery, player) -> None:
+        try:
+            self._streamline_tabs.remove(tabbed)
+        except ValueError:
+            pass
+        self._on_streamline_gallery_closed(gallery)
+        self._on_streamline_player_closed(player)
 
     def _update_streamline_galleries(self) -> None:
         for gallery in list(self._streamline_galleries):
