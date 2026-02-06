@@ -1761,7 +1761,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         if mask is None:
             return Ipcm, Ivelmag, extras
         mask_bool = mask > 0.5
-        Ipcm = np.where(mask_bool, Ipcm, 0.0)
         Ivelmag = np.where(mask_bool, Ivelmag, 0.0)
         for key in ("ke", "vortmag"):
             if key in extras:
@@ -3718,6 +3717,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         tracks = [np.zeros((total_steps + 1, 3), dtype=np.float32) for _ in range(num_seeds)]
         speeds = [np.zeros((total_steps + 1,), dtype=np.float32) for _ in range(num_seeds)]
         alive = np.ones((num_seeds,), dtype=bool)
+        nan_pos = np.array([np.nan, np.nan, np.nan], dtype=np.float32)
         dt_s = self._particle_dt_s()
         spacing = self._voxel_spacing_mm()
         for idx in range(num_seeds):
@@ -3737,16 +3737,16 @@ class ValveTracker(QtWidgets.QMainWindow):
             for idx in range(num_seeds):
                 pos = positions[idx]
                 if not alive[idx]:
-                    tracks[idx][step + 1] = pos
+                    tracks[idx][step + 1] = nan_pos
                     continue
                 if not self._point_in_mask(pos, mask):
                     alive[idx] = False
-                    tracks[idx][step + 1] = pos
+                    tracks[idx][step + 1] = nan_pos
                     continue
                 vel = self._sample_velocity_at(vel_t, pos)
                 if not np.all(np.isfinite(vel)):
                     alive[idx] = False
-                    tracks[idx][step + 1] = pos
+                    tracks[idx][step + 1] = nan_pos
                     continue
                 speed = float(np.linalg.norm(vel))
                 speeds[idx][step + 1] = speed

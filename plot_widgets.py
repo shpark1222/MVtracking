@@ -208,6 +208,7 @@ class StreamlineWindow(QtWidgets.QWidget):
                 self.view.setParent(None)
             except Exception:
                 pass
+        self._particle_timer.stop()
         self._line_items = []
         self._pathline_items = []
         self._particle_item = None
@@ -221,6 +222,8 @@ class StreamlineWindow(QtWidgets.QWidget):
                 self.update_streamlines(self._streamlines, self._volume_shape, ensure_view=False)
             if self._contour_points is not None and self._volume_shape is not None:
                 self.update_contour(self._contour_points, self._volume_shape)
+            if self._particles_enabled and self._particle_tracks:
+                self._update_particles(self._particle_tracks)
         finally:
             self._rebuilding_view = False
         return True
@@ -316,11 +319,24 @@ class StreamlineWindow(QtWidgets.QWidget):
             if line is None or len(line) == 0:
                 continue
             pts = np.asarray(line, dtype=np.float32)
+            if pts.ndim != 2 or pts.shape[1] != 3:
+                continue
+            if not np.all(np.isfinite(pts)):
+                valid_mask = np.all(np.isfinite(pts), axis=1)
+                if not np.any(valid_mask):
+                    continue
+                first_invalid = int(np.argmax(~valid_mask)) if not np.all(valid_mask) else pts.shape[0]
+                pts = pts[:first_invalid]
+                if pts.size == 0:
+                    continue
             mags_arr = None
             if mags is not None:
                 mags_arr = np.asarray(mags, dtype=np.float32)
                 if mags_arr.shape[0] != pts.shape[0]:
-                    mags_arr = None
+                    if mags_arr.shape[0] >= pts.shape[0]:
+                        mags_arr = mags_arr[: pts.shape[0]]
+                    else:
+                        mags_arr = None
                 elif np.any(~np.isfinite(mags_arr)):
                     mags_arr = None
             if mags_arr is not None:
@@ -376,11 +392,24 @@ class StreamlineWindow(QtWidgets.QWidget):
             if line is None or len(line) == 0:
                 continue
             pts = np.asarray(line, dtype=np.float32)
+            if pts.ndim != 2 or pts.shape[1] != 3:
+                continue
+            if not np.all(np.isfinite(pts)):
+                valid_mask = np.all(np.isfinite(pts), axis=1)
+                if not np.any(valid_mask):
+                    continue
+                first_invalid = int(np.argmax(~valid_mask)) if not np.all(valid_mask) else pts.shape[0]
+                pts = pts[:first_invalid]
+                if pts.size == 0:
+                    continue
             mags_arr = None
             if mags is not None:
                 mags_arr = np.asarray(mags, dtype=np.float32)
                 if mags_arr.shape[0] != pts.shape[0]:
-                    mags_arr = None
+                    if mags_arr.shape[0] >= pts.shape[0]:
+                        mags_arr = mags_arr[: pts.shape[0]]
+                    else:
+                        mags_arr = None
                 elif np.any(~np.isfinite(mags_arr)):
                     mags_arr = None
             if mags_arr is not None:
@@ -483,7 +512,10 @@ class StreamlineWindow(QtWidgets.QWidget):
             if self._particle_step >= pts.shape[0]:
                 continue
             idx = min(self._particle_step, pts.shape[0] - 1)
-            positions.append(pts[idx])
+            pos = pts[idx]
+            if not np.all(np.isfinite(pos)):
+                continue
+            positions.append(pos)
             if stream_colors is None or stream_colors.shape[0] != pts.shape[0]:
                 colors.append([1.0, 1.0, 1.0, 0.9])
             else:
