@@ -3232,6 +3232,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
         player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
+        player.velocity_mask_changed.connect(
+            lambda p=player: self._apply_streamline_player(p)
+        )
         tabbed.destroyed.connect(
             lambda _obj=None, t=tabbed, g=gallery, p=player: self._on_streamline_tab_closed(t, g, p)
         )
@@ -3276,6 +3279,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
         player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
+        player.velocity_mask_changed.connect(
+            lambda p=player: self._apply_streamline_player(p)
+        )
         player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
         self._streamline_players.append(player)
         player.show()
@@ -3343,13 +3349,20 @@ class ValveTracker(QtWidgets.QMainWindow):
                     self, "MV tracker", "No mask is available for the current phase."
                 )
                 return
-            if player.streamline_check.isChecked():
+            should_compute = (
+                player.streamline_check.isChecked()
+                or player.particle_check.isChecked()
+                or player.pathline_check.isChecked()
+            )
+            if should_compute:
                 base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
                 axis_order = player.axis_order()
                 axis_flips = player.axis_flips()
                 vel_t = base_vel
                 if axis_order != "XYZ" or any(axis_flips):
                     vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+                if player.apply_velocity_mask():
+                    vel_t = vel_t * mask[..., None]
                 seed_points = player.seed_points()
                 if seed_points is not None:
                     streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
@@ -3376,6 +3389,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_t = base_vel
         if axis_order != "XYZ" or any(axis_flips):
             vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+        if player.apply_velocity_mask():
+            vel_t = vel_t * mask[..., None]
         contour_voxel = self._streamline_contour_voxel(t)
         seed_points = player.seed_points()
         if seed_points is not None:
@@ -3601,7 +3616,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         axis_order = player.axis_order()
         axis_flips = player.axis_flips()
         cycles = player.particle_cycles()
-        tracks = self._compute_timevarying_tracks(seed_points, phase, cycles, axis_order, axis_flips)
+        tracks = self._compute_timevarying_tracks(
+            seed_points,
+            phase,
+            cycles,
+            axis_order,
+            axis_flips,
+            apply_velocity_mask=player.apply_velocity_mask(),
+        )
         total_steps = self.Nt * cycles
         player.set_precomputed_tracks(tracks, seed_phase=phase, steps=total_steps)
         player.view.update_particle_tracks(tracks, mask.shape)
@@ -3644,6 +3666,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         cycles: int,
         axis_order: str,
         axis_flips: tuple,
+        apply_velocity_mask: bool = True,
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         if seed_points is None or seed_points.size == 0:
             return []
@@ -3669,6 +3692,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             vel_t = base_vel
             if axis_order != "XYZ" or any(axis_flips):
                 vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+            if apply_velocity_mask:
+                vel_t = vel_t * mask[..., None]
             for idx in range(num_seeds):
                 pos = positions[idx]
                 if not alive[idx]:
