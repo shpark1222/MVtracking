@@ -680,6 +680,7 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
     seed_requested = QtCore.Signal(int)
     apply_requested = QtCore.Signal()
     stop_requested = QtCore.Signal()
+    velocity_mask_changed = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -766,6 +767,11 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         visibility_row.addWidget(self.pathline_check)
         controls_layout.addLayout(visibility_row)
 
+        self.velocity_mask_check = QtWidgets.QCheckBox("Apply mask to velocities", self)
+        self.velocity_mask_check.setChecked(True)
+        self.velocity_mask_check.toggled.connect(self._on_velocity_mask_toggle)
+        controls_layout.addWidget(self.velocity_mask_check)
+
         self.streamline_check = QtWidgets.QCheckBox("Show streamline", self)
         self.streamline_check.setChecked(False)
         self.streamline_check.toggled.connect(self._on_streamline_toggle)
@@ -818,6 +824,9 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def seed_phase(self) -> int:
         return int(self.seed_phase_spin.value())
+
+    def apply_velocity_mask(self) -> bool:
+        return bool(self.velocity_mask_check.isChecked())
 
     def particle_cycles(self) -> int:
         return int(self.particle_cycle_spin.value())
@@ -877,6 +886,9 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def _on_streamline_toggle(self, checked: bool) -> None:
         self.view.set_show_streamlines(bool(checked))
+
+    def _on_velocity_mask_toggle(self, _checked: bool) -> None:
+        self.velocity_mask_changed.emit()
 
     def _on_pathline_toggle(self, checked: bool) -> None:
         self.view.set_show_pathlines(bool(checked))
