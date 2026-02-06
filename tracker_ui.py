@@ -316,6 +316,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
         self.btn_view_streamline = QtWidgets.QPushButton("View streamline")
         self.btn_clear_mask = QtWidgets.QPushButton("Clear mask")
+        self.chk_apply_vel_mask = QtWidgets.QCheckBox("Apply mask to velocities")
+        self.chk_apply_vel_mask.setChecked(True)
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
@@ -324,6 +326,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
         pcmra_ctrl.addWidget(self.btn_view_streamline, 1, 3)
         pcmra_ctrl.addWidget(self.btn_clear_mask, 1, 4)
+        pcmra_ctrl.addWidget(self.chk_apply_vel_mask, 1, 5)
         pcmra_ctrl.setColumnStretch(9, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
@@ -567,6 +570,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
         self.chk_segment_labels.stateChanged.connect(self._on_segment_labels_toggle)
+        self.chk_apply_vel_mask.stateChanged.connect(self._on_apply_vel_mask_toggle)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -941,6 +945,11 @@ class ValveTracker(QtWidgets.QMainWindow):
         if 0 <= t < self.Nt:
             self._cur_phase = None
             self.set_phase(t)
+
+    def _on_apply_vel_mask_toggle(self, _state: int) -> None:
+        if self._cur_phase is None:
+            return
+        self.set_phase(self._cur_phase, force=True)
 
     def try_restore_state(self):
         st_path = self.tracking_path or mvtrack_path_for_folder(self.work_folder)
@@ -1686,7 +1695,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self.pack.vortmag is not None and self.pack.vortmag.ndim == 4:
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
 
-        if self._vel_mask is not None:
+        if self._vel_mask is not None and self.chk_apply_vel_mask.isChecked():
             if self._vel_mask.ndim == 4:
                 mask_t = self._vel_mask[:, :, :, t]
                 vel5d[:, :, :, :, t] *= mask_t[..., None]
