@@ -163,7 +163,8 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_step = 0
         self._particle_cycles = 1
         self._particle_cycle_index = 0
-        self._particle_hold_frames = 0
+        self._pathline_items = []
+        self._show_pathlines = False
 
         self._build_view()
 
@@ -241,14 +242,16 @@ class StreamlineWindow(QtWidgets.QWidget):
         finally:
             self._suppress_camera_signal = False
 
-    def clear_streamlines(self):
+    def clear_streamlines(self, clear_prepared: bool = True):
         for item in self._line_items:
             try:
                 self.view.removeItem(item)
             except Exception:
                 pass
         self._line_items = []
-        self._prepared_streamlines = []
+        if clear_prepared:
+            self._prepared_streamlines = []
+        self._clear_pathlines()
 
     def clear_particles(self):
         if self._particle_item is None:
@@ -261,6 +264,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_timer.stop()
         self._particle_step = 0
         self._particle_cycle_index = 0
+        self._clear_pathlines()
 
     def clear_contour(self):
         if self._contour_item is None:
@@ -334,7 +338,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         if self._show_streamlines == show:
             return
         self._show_streamlines = show
-        self.clear_streamlines()
+        self.clear_streamlines(clear_prepared=False)
         if self._show_streamlines and self._prepared_streamlines:
             for pts, colors in self._prepared_streamlines:
                 item = gl.GLLinePlotItem(
@@ -346,6 +350,16 @@ class StreamlineWindow(QtWidgets.QWidget):
                 )
                 self.view.addItem(item)
                 self._line_items.append(item)
+
+    def set_show_pathlines(self, show: bool) -> None:
+        show = bool(show)
+        if self._show_pathlines == show:
+            return
+        self._show_pathlines = show
+        if not self._show_pathlines:
+            self._clear_pathlines()
+        else:
+            self._update_particles(self._prepared_streamlines)
 
     def set_particles_enabled(self, enabled: bool, interval_ms: int = 50) -> None:
         enabled = bool(enabled)
@@ -365,6 +379,12 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_timer.start()
         self._update_particles(self._prepared_streamlines)
 
+    def reset_particle_animation(self) -> None:
+        self._particle_step = 0
+        self._particle_cycle_index = 0
+        if self._particles_enabled:
+            self._update_particles(self._prepared_streamlines)
+
     def set_particle_cycles(self, cycles: int) -> None:
         cycles = max(1, int(cycles))
         if self._particle_cycles == cycles:
@@ -372,12 +392,6 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_cycles = cycles
         self._particle_cycle_index = 0
         self._particle_step = 0
-
-    def set_particle_hold_frames(self, hold_frames: int) -> None:
-        hold_frames = max(0, int(hold_frames))
-        if self._particle_hold_frames == hold_frames:
-            return
-        self._particle_hold_frames = hold_frames
 
     def _update_particles(self, prepared_streamlines) -> None:
         if not self._particles_enabled:
@@ -387,10 +401,10 @@ class StreamlineWindow(QtWidgets.QWidget):
             self.view.addItem(self._particle_item)
         positions = []
         colors = []
-        for pts, stream_colors in prepared_streamlines:
+        for idx_stream, (pts, stream_colors) in enumerate(prepared_streamlines):
             if pts.size == 0:
                 continue
-            if self._particle_step >= pts.shape[0] + self._particle_hold_frames:
+            if self._particle_step >= pts.shape[0]:
                 continue
             idx = min(self._particle_step, pts.shape[0] - 1)
             positions.append(pts[idx])
@@ -398,10 +412,16 @@ class StreamlineWindow(QtWidgets.QWidget):
                 colors.append([1.0, 1.0, 1.0, 0.9])
             else:
                 colors.append(stream_colors[idx])
+            if self._show_pathlines:
+                self._update_pathline_item(idx_stream, pts[: idx + 1], stream_colors)
         if not positions:
             self._particle_item.setData(pos=np.empty((0, 3), dtype=np.float32))
+            if self._show_pathlines:
+                self._clear_pathlines()
             return
         self._particle_item.setData(pos=np.array(positions, dtype=np.float32), color=np.array(colors, dtype=np.float32))
+        if self._show_pathlines:
+            self._trim_pathlines(len(prepared_streamlines))
 
     def _advance_particles(self) -> None:
         if not self._particles_enabled or not self._prepared_streamlines:
@@ -410,12 +430,10 @@ class StreamlineWindow(QtWidgets.QWidget):
         if max_len <= 1:
             return
         next_step = self._particle_step + 1
-        if next_step >= max_len + self._particle_hold_frames:
+        if next_step >= max_len:
             self._particle_cycle_index += 1
             if self._particle_cycle_index >= self._particle_cycles:
-                self._particle_timer.stop()
-                self._update_particles([])
-                return
+                self._particle_cycle_index = 0
             self._particle_step = 0
         else:
             self._particle_step = next_step
@@ -472,6 +490,37 @@ class StreamlineWindow(QtWidgets.QWidget):
             colors = cmap(positions)
         colors[:, 3] = 0.9
         return colors.astype(np.float32)
+
+    def _update_pathline_item(self, idx: int, pts: np.ndarray, colors: Optional[np.ndarray]) -> None:
+        if not self._show_pathlines or pts.size == 0:
+            return
+        while len(self._pathline_items) <= idx:
+            item = gl.GLLinePlotItem(width=1.0, antialias=True, mode="line_strip")
+            self.view.addItem(item)
+            self._pathline_items.append(item)
+        item = self._pathline_items[idx]
+        if colors is None or colors.shape[0] != pts.shape[0]:
+            item.setData(pos=pts, color=(1.0, 1.0, 1.0, 0.9))
+        else:
+            item.setData(pos=pts, color=colors)
+
+    def _trim_pathlines(self, target_len: int) -> None:
+        if len(self._pathline_items) <= target_len:
+            return
+        for _ in range(len(self._pathline_items) - target_len):
+            item = self._pathline_items.pop()
+            try:
+                self.view.removeItem(item)
+            except Exception:
+                pass
+
+    def _clear_pathlines(self) -> None:
+        for item in self._pathline_items:
+            try:
+                self.view.removeItem(item)
+            except Exception:
+                pass
+        self._pathline_items = []
 
 
 class StreamlineGalleryWindow(QtWidgets.QWidget):
@@ -574,6 +623,10 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self._seed_mode = "mv"
         self._seed_points = None
         self._seed_phase = None
+        self._phase_timer = QtCore.QTimer(self)
+        self._phase_timer.timeout.connect(self._advance_phase_playback)
+        self._phase_cycle_index = 0
+        self._phase_interval_ms = 100
 
         layout = QtWidgets.QVBoxLayout(self)
         top_row = QtWidgets.QHBoxLayout()
@@ -626,24 +679,30 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.particle_cycle_spin.setRange(1, 20)
         self.particle_cycle_spin.setValue(1)
         timing_group.addRow("Particle cycles", self.particle_cycle_spin)
-        self.particle_hold_spin = QtWidgets.QSpinBox(self)
-        self.particle_hold_spin.setRange(0, 200)
-        self.particle_hold_spin.setValue(0)
-        timing_group.addRow("Hold at end (frames)", self.particle_hold_spin)
         controls_layout.addLayout(timing_group)
 
-        self.streamline_check = QtWidgets.QCheckBox("Show pathline", self)
+        visibility_row = QtWidgets.QHBoxLayout()
+        self.streamline_check = QtWidgets.QCheckBox("Show streamline", self)
         self.streamline_check.setChecked(False)
         self.streamline_check.toggled.connect(self._on_streamline_toggle)
-        controls_layout.addWidget(self.streamline_check)
+        visibility_row.addWidget(self.streamline_check)
+        self.pathline_check = QtWidgets.QCheckBox("Show pathline", self)
+        self.pathline_check.setChecked(False)
+        self.pathline_check.toggled.connect(self._on_pathline_toggle)
+        visibility_row.addWidget(self.pathline_check)
+        controls_layout.addLayout(visibility_row)
+
+        self.particle_check = QtWidgets.QCheckBox("Visualize particle", self)
+        self.particle_check.setChecked(True)
+        self.particle_check.toggled.connect(self._on_particle_toggle)
+        controls_layout.addWidget(self.particle_check)
         controls_layout.addStretch(1)
 
         top_row.addWidget(controls_widget, 1)
         self.view = StreamlineWindow(parent=self)
         self.view.set_particles_enabled(True, interval_ms=50)
         self.view.set_show_streamlines(False)
-        self.view.set_particle_hold_frames(self.particle_hold_spin.value())
-        self.particle_hold_spin.valueChanged.connect(self.view.set_particle_hold_frames)
+        self.view.set_show_pathlines(False)
         top_row.addWidget(self.view, 2)
         layout.addLayout(top_row)
 
@@ -710,9 +769,44 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def _on_stop_particles_clicked(self) -> None:
         self.view.set_particles_enabled(False)
+        self._phase_timer.stop()
+        if self.particle_check.isChecked():
+            self.particle_check.setChecked(False)
 
     def _on_streamline_toggle(self, checked: bool) -> None:
         self.view.set_show_streamlines(bool(checked))
+
+    def _on_pathline_toggle(self, checked: bool) -> None:
+        self.view.set_show_pathlines(bool(checked))
+
+    def _on_particle_toggle(self, checked: bool) -> None:
+        if checked:
+            self.view.set_particles_enabled(True, interval_ms=50)
+        else:
+            self.view.set_particles_enabled(False)
+
+    def start_phase_playback(self) -> None:
+        self._phase_cycle_index = 0
+        if self._phase_interval_ms:
+            self._phase_timer.setInterval(self._phase_interval_ms)
+        self.view.reset_particle_animation()
+        if self.phase_slider.maximum() > 1:
+            self._phase_timer.start()
+
+    def _advance_phase_playback(self) -> None:
+        max_phase = int(self.phase_slider.maximum())
+        if max_phase <= 1:
+            return
+        next_phase = self._phase + 1
+        if next_phase > max_phase:
+            next_phase = 1
+        seed_phase = int(self.seed_phase_spin.value())
+        if next_phase == seed_phase:
+            self._phase_cycle_index += 1
+            if self._phase_cycle_index >= self.particle_cycles():
+                self._phase_cycle_index = 0
+                self.view.reset_particle_animation()
+        self.set_phase(next_phase)
 
 
 class StreamlineTabbedWindow(QtWidgets.QWidget):

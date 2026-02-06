@@ -3505,8 +3505,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             )
             return
         player.set_seed_points(np.array(valid_seeds, dtype=np.float32), phase=t)
+        if hasattr(player, "particle_check"):
+            player.particle_check.setChecked(True)
         player.view.set_particles_enabled(True, interval_ms=50)
         player.set_phase(phase)
+        if hasattr(player, "start_phase_playback"):
+            player.start_phase_playback()
 
     def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
         coords = np.array([[pos[0]], [pos[1]], [pos[2]]], dtype=np.float32)
