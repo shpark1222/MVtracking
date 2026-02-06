@@ -316,8 +316,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
         self.btn_view_streamline = QtWidgets.QPushButton("View streamline")
         self.btn_clear_mask = QtWidgets.QPushButton("Clear mask")
-        self.chk_apply_vel_mask = QtWidgets.QCheckBox("Apply mask to velocities")
-        self.chk_apply_vel_mask.setChecked(True)
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
@@ -326,7 +324,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
         pcmra_ctrl.addWidget(self.btn_view_streamline, 1, 3)
         pcmra_ctrl.addWidget(self.btn_clear_mask, 1, 4)
-        pcmra_ctrl.addWidget(self.chk_apply_vel_mask, 1, 5)
         pcmra_ctrl.setColumnStretch(9, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
@@ -570,7 +567,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.chk_apply_segments.stateChanged.connect(self.toggle_segments_visibility)
         self.segment_selector.currentTextChanged.connect(self.toggle_segments_visibility)
         self.chk_segment_labels.stateChanged.connect(self._on_segment_labels_toggle)
-        self.chk_apply_vel_mask.stateChanged.connect(self._on_apply_vel_mask_toggle)
         self.btn_apply_levels.clicked.connect(self.apply_level_range)
         self.btn_auto_levels.clicked.connect(self.enable_auto_levels)
         self.btn_pcmra_apply.clicked.connect(self.apply_pcmra_levels)
@@ -945,11 +941,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         if 0 <= t < self.Nt:
             self._cur_phase = None
             self.set_phase(t)
-
-    def _on_apply_vel_mask_toggle(self, _state: int) -> None:
-        if self._cur_phase is None:
-            return
-        self.set_phase(self._cur_phase, force=True)
 
     def try_restore_state(self):
         st_path = self.tracking_path or mvtrack_path_for_folder(self.work_folder)
@@ -1694,13 +1685,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             extra_scalars["ke"] = self.pack.ke[:, :, :, t].astype(np.float32)
         if self.pack.vortmag is not None and self.pack.vortmag.ndim == 4:
             extra_scalars["vortmag"] = self.pack.vortmag[:, :, :, t].astype(np.float32)
-
-        if self._vel_mask is not None and self.chk_apply_vel_mask.isChecked():
-            if self._vel_mask.ndim == 4:
-                mask_t = self._vel_mask[:, :, :, t]
-                vel5d[:, :, :, :, t] *= mask_t[..., None]
-            else:
-                vel5d *= self._vel_mask[..., None, None]
 
         R = self._voxel_to_patient_rotation(vol_geom)
         if R is not None:
@@ -3228,13 +3212,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         gallery.streamline_visibility_changed.connect(
             lambda visible, g=gallery: self._on_streamline_gallery_visibility(g, visible)
         )
-        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
         player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
-        player.velocity_mask_changed.connect(
-            lambda p=player: self._apply_streamline_player(p)
-        )
         tabbed.destroyed.connect(
             lambda _obj=None, t=tabbed, g=gallery, p=player: self._on_streamline_tab_closed(t, g, p)
         )
@@ -3275,13 +3255,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.set_phase_count(self.Nt, seed_phase_max=self.Nt)
         player.set_phase(int(self.slider.value()))
         player.seed_phase_spin.setValue(int(self.slider.value()))
-        player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
         player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
         player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
-        player.velocity_mask_changed.connect(
-            lambda p=player: self._apply_streamline_player(p)
-        )
         player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
         self._streamline_players.append(player)
         player.show()
@@ -3349,11 +3325,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                     self, "MV tracker", "No mask is available for the current phase."
                 )
                 return
-            should_compute = (
-                player.streamline_check.isChecked()
-                or player.particle_check.isChecked()
-                or player.pathline_check.isChecked()
-            )
+            should_compute = player.streamline_check.isChecked()
             if should_compute:
                 base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
                 axis_order = player.axis_order()
@@ -3361,8 +3333,6 @@ class ValveTracker(QtWidgets.QMainWindow):
                 vel_t = base_vel
                 if axis_order != "XYZ" or any(axis_flips):
                     vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
-                if player.apply_velocity_mask():
-                    vel_t = vel_t * mask[..., None]
                 seed_points = player.seed_points()
                 if seed_points is not None:
                     streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
@@ -3389,8 +3359,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         vel_t = base_vel
         if axis_order != "XYZ" or any(axis_flips):
             vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
-        if player.apply_velocity_mask():
-            vel_t = vel_t * mask[..., None]
         contour_voxel = self._streamline_contour_voxel(t)
         seed_points = player.seed_points()
         if seed_points is not None:
@@ -3622,7 +3590,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             cycles,
             axis_order,
             axis_flips,
-            apply_velocity_mask=player.apply_velocity_mask(),
         )
         total_steps = self.Nt * cycles
         player.set_precomputed_tracks(tracks, seed_phase=phase, steps=total_steps)
@@ -3640,10 +3607,7 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _apply_streamline_player(self, player) -> None:
         if player is None:
             return
-        if player.seed_mode() == "mv":
-            self._seed_streamlines_for_player(player, int(player.seed_spin.value()))
-        else:
-            self._update_streamline_player(player, int(player.phase_slider.value()))
+        self._seed_streamlines_for_player(player, int(player.seed_spin.value()))
         if hasattr(player, "particle_check"):
             player.view.set_particles_enabled(player.particle_check.isChecked(), interval_ms=0)
         if hasattr(player, "pathline_check"):
@@ -3666,7 +3630,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         cycles: int,
         axis_order: str,
         axis_flips: tuple,
-        apply_velocity_mask: bool = True,
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         if seed_points is None or seed_points.size == 0:
             return []
@@ -3692,8 +3655,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             vel_t = base_vel
             if axis_order != "XYZ" or any(axis_flips):
                 vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
-            if apply_velocity_mask:
-                vel_t = vel_t * mask[..., None]
             for idx in range(num_seeds):
                 pos = positions[idx]
                 if not alive[idx]:
