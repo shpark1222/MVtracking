@@ -355,6 +355,7 @@ class PackBuilder(QtWidgets.QWidget):
         # prefer mrStruct edges if present
         edges = None
         vox = None
+        td_ms = None
         for meta in (vel_meta, mag_meta):
             if meta is None:
                 continue
@@ -362,6 +363,8 @@ class PackBuilder(QtWidgets.QWidget):
                 edges = meta["edges"]
             if vox is None and meta.get("vox") is not None:
                 vox = meta["vox"]
+            if td_ms is None and meta.get("td") is not None:
+                td_ms = meta["td"]
 
         if edges is not None:
             edges = np.asarray(edges, float)
@@ -385,6 +388,9 @@ class PackBuilder(QtWidgets.QWidget):
                 geom["PixelSpacing"] = vox[:2]
             if vox.size >= 3:
                 geom["sliceStep"] = np.array([vox[2]])
+        if td_ms is not None and np.isfinite(td_ms) and float(td_ms) > 0:
+            geom["TD"] = float(td_ms)
+            self.log(f"[info] using mrStruct.user.TD={float(td_ms):.6f} ms")
 
         ke = compute_ke(vel)
         vort, vortmag = compute_vorticity(
@@ -425,6 +431,8 @@ class PackBuilder(QtWidgets.QWidget):
             gg["IPPs"] = geom["IPPs"]
             gg["slice_positions"] = geom["slice_positions"]
             gg["slice_order"] = geom["slice_order"]
+            if "TD" in geom:
+                gg["TD"] = np.array([geom["TD"]], dtype=np.float64)
             gg.attrs["axis_map_json"] = json.dumps(_to_jsonable(geom["axis_map"]))
 
             gc = f.create_group("cine")
