@@ -1347,6 +1347,51 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         return None
 
+    def _particle_dt_s(self) -> float:
+        td_ms = None
+        if self.pack is not None and getattr(self.pack, "geom", None) is not None:
+            td_ms = getattr(self.pack.geom, "td", None)
+        if td_ms is None:
+            return 1.0
+        try:
+            td_ms = float(td_ms)
+        except Exception:
+            return 1.0
+        if not np.isfinite(td_ms) or td_ms <= 0:
+            return 1.0
+        return td_ms * 1e-3
+
+    def _voxel_spacing_mm(self) -> np.ndarray:
+        geom = getattr(self.pack, "geom", None)
+        if geom is None:
+            return np.array([1.0, 1.0, 1.0], dtype=np.float64)
+        spacing = None
+        if getattr(geom, "A", None) is not None:
+            try:
+                col_len = float(np.linalg.norm(geom.A[:, 0]))
+                row_len = float(np.linalg.norm(geom.A[:, 1]))
+                slc_len = float(np.linalg.norm(geom.A[:, 2]))
+                spacing = np.array([row_len, col_len, slc_len], dtype=np.float64)
+            except Exception:
+                spacing = None
+        if spacing is None and getattr(geom, "pixel_spacing", None) is not None:
+            ps = np.asarray(geom.pixel_spacing, dtype=np.float64).reshape(-1)
+            row_len = float(ps[0]) if ps.size >= 1 else 1.0
+            col_len = float(ps[1]) if ps.size >= 2 else row_len
+            slc_len = 1.0
+            if getattr(geom, "slice_positions", None) is not None:
+                slc = np.asarray(geom.slice_positions, dtype=np.float64).reshape(-1)
+                diffs = np.diff(np.sort(slc))
+                diffs = diffs[np.isfinite(diffs)]
+                diffs = diffs[np.abs(diffs) > 1e-6]
+                if diffs.size:
+                    slc_len = float(np.median(diffs))
+            spacing = np.array([row_len, col_len, slc_len], dtype=np.float64)
+        if spacing is None or spacing.shape[0] != 3:
+            spacing = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+        spacing = np.where(np.isfinite(spacing) & (spacing > 0), spacing, 1.0)
+        return spacing
+
     def _overlay_line_on_plot(self, plot: pg.PlotItem, coords: np.ndarray, color: str, label: str):
         if coords.shape[0] != 2:
             return
@@ -3413,6 +3458,8 @@ class ValveTracker(QtWidgets.QMainWindow):
     ) -> Optional[np.ndarray]:
         points = [seed.copy()]
         pos = seed.astype(np.float32)
+        dt_s = self._particle_dt_s()
+        spacing = self._voxel_spacing_mm()
         for _ in range(max_steps):
             vel = self._sample_velocity_at(vel_t, pos)
             if not np.all(np.isfinite(vel)):
@@ -3420,8 +3467,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             speed = float(np.linalg.norm(vel))
             if speed < 1e-6:
                 break
-            step = direction * step_size * vel / speed
-            pos = pos + step
+            delta_mm = direction * vel * (dt_s * 1e3)
+            delta_vox = delta_mm / spacing
+            pos = pos + delta_vox.astype(np.float32)
             if not self._point_in_mask(pos, mask):
                 break
             points.append(pos.copy())
@@ -3593,13 +3641,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         seed_phase = int(seed_phase)
         cycles = max(1, int(cycles))
         total_steps = self.Nt * cycles
-        step_size = 0.6
         seed_points = np.asarray(seed_points, dtype=np.float32)
         num_seeds = seed_points.shape[0]
         positions = seed_points.copy()
         tracks = [np.zeros((total_steps + 1, 3), dtype=np.float32) for _ in range(num_seeds)]
         speeds = [np.zeros((total_steps + 1,), dtype=np.float32) for _ in range(num_seeds)]
         alive = np.ones((num_seeds,), dtype=bool)
+        dt_s = self._particle_dt_s()
+        spacing = self._voxel_spacing_mm()
         for idx in range(num_seeds):
             tracks[idx][0] = positions[idx]
         for step in range(total_steps):
@@ -3630,7 +3679,9 @@ class ValveTracker(QtWidgets.QMainWindow):
                 if speed < 1e-6:
                     tracks[idx][step + 1] = pos
                     continue
-                pos = pos + step_size * vel / speed
+                delta_mm = vel * (dt_s * 1e3)
+                delta_vox = delta_mm / spacing
+                pos = pos + delta_vox.astype(np.float32)
                 positions[idx] = pos
                 tracks[idx][step + 1] = pos
         return [(tracks[idx], speeds[idx]) for idx in range(num_seeds)]

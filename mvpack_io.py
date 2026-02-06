@@ -30,6 +30,7 @@ class VolGeom:
     pixel_spacing: Optional[np.ndarray] = None
     slice_positions: Optional[np.ndarray] = None
     slice_order: Optional[np.ndarray] = None
+    td: Optional[float] = None
 
 
 @dataclass
@@ -47,9 +48,19 @@ def load_mrstruct(path: str) -> Tuple[np.ndarray, Dict[str, Optional[np.ndarray]
     ms = md["mrStruct"]
     edges = getattr(ms, "edges", None)
     vox = getattr(ms, "vox", None)
+    td = None
+    user = getattr(ms, "user", None)
+    if user is not None:
+        td = getattr(user, "TD", None)
+        if td is not None:
+            try:
+                td = float(np.asarray(td).reshape(-1)[0])
+            except Exception:
+                td = None
     meta = {
         "edges": np.array(edges) if edges is not None else None,
         "vox": np.array(vox) if vox is not None else None,
+        "td": td,
     }
     return np.array(ms.dataAy), meta
 
@@ -191,6 +202,9 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
         geom_slice_positions = _read_ds(f, "/geom/slice_positions").astype(np.float64) if "/geom/slice_positions" in f else None
         geom_slice_order = _read_ds(f, "/geom/slice_order").astype(np.int32) if "/geom/slice_order" in f else None
         geom_ipps = _read_ds(f, "/geom/IPPs").astype(np.float64) if "/geom/IPPs" in f else None
+        geom_td = _read_ds(f, "/geom/TD").astype(np.float64) if "/geom/TD" in f else None
+        if geom_td is not None:
+            geom_td = float(np.asarray(geom_td).reshape(-1)[0])
 
         vel_path = _first_existing_path(f, ["/data/vel"])
         if vel_path is None:
@@ -324,6 +338,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 pixel_spacing=geom_ps,
                 slice_positions=geom_slice_positions,
                 slice_order=geom_slice_order,
+                td=geom_td,
             ),
             ke=ke,
             vortmag=vortmag,
