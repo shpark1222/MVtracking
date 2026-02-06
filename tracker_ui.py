@@ -3314,17 +3314,26 @@ class ValveTracker(QtWidgets.QMainWindow):
     def _update_streamline_player(self, player, phase: int) -> None:
         if player is None:
             return
+        apply_to_mask = True
+        if hasattr(player, "apply_to_mask"):
+            apply_to_mask = bool(player.apply_to_mask())
         if player.has_precomputed_tracks():
             total_steps = player.precomputed_steps() or 1
             step = max(0, min(int(phase) - 1, total_steps - 1))
             seed_phase = player.precomputed_seed_phase() or 1
             t = (seed_phase - 1 + step) % self.Nt
             mask = self._current_vel_mask(t)
-            if mask is None or not np.any(mask):
-                QtWidgets.QMessageBox.information(
-                    self, "MV tracker", "No mask is available for the current phase."
-                )
-                return
+            if apply_to_mask:
+                if mask is None or not np.any(mask):
+                    QtWidgets.QMessageBox.information(
+                        self, "MV tracker", "No mask is available for the current phase."
+                    )
+                    return
+            else:
+                if mask is None or not np.any(mask):
+                    mask = np.ones(self._vel_raw.shape[:3], dtype=bool)
+                else:
+                    mask = np.ones(mask.shape, dtype=bool)
             should_compute = player.streamline_check.isChecked()
             if should_compute:
                 base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
@@ -3348,11 +3357,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         if t < 0 or t >= self.Nt:
             return
         mask = self._current_vel_mask(t)
-        if mask is None or not np.any(mask):
-            QtWidgets.QMessageBox.information(
-                self, "MV tracker", "No mask is available for the current phase."
-            )
-            return
+        if apply_to_mask:
+            if mask is None or not np.any(mask):
+                QtWidgets.QMessageBox.information(
+                    self, "MV tracker", "No mask is available for the current phase."
+                )
+                return
+        else:
+            if mask is None or not np.any(mask):
+                mask = np.ones(self._vel_raw.shape[:3], dtype=bool)
+            else:
+                mask = np.ones(mask.shape, dtype=bool)
         base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
         axis_order = player.axis_order()
         axis_flips = player.axis_flips()
@@ -3558,12 +3573,21 @@ class ValveTracker(QtWidgets.QMainWindow):
         t = phase - 1
         if t < 0 or t >= self.Nt:
             return
+        apply_to_mask = True
+        if hasattr(player, "apply_to_mask"):
+            apply_to_mask = bool(player.apply_to_mask())
         mask = self._current_vel_mask(t)
-        if mask is None or not np.any(mask):
-            QtWidgets.QMessageBox.information(
-                self, "MV tracker", "No mask is available for the current phase."
-            )
-            return
+        if apply_to_mask:
+            if mask is None or not np.any(mask):
+                QtWidgets.QMessageBox.information(
+                    self, "MV tracker", "No mask is available for the current phase."
+                )
+                return
+        else:
+            if mask is None or not np.any(mask):
+                mask = np.ones(self._vel_raw.shape[:3], dtype=bool)
+            else:
+                mask = np.ones(mask.shape, dtype=bool)
         seed_voxel = self._contour_seed_voxels(t, seed_count)
         if seed_voxel is None or seed_voxel.size == 0:
             QtWidgets.QMessageBox.information(
@@ -3572,7 +3596,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         valid_seeds = []
         for seed in seed_voxel:
-            if self._point_in_mask(seed, mask):
+            if not apply_to_mask or self._point_in_mask(seed, mask):
                 valid_seeds.append(seed)
         if not valid_seeds:
             QtWidgets.QMessageBox.information(
@@ -3584,12 +3608,14 @@ class ValveTracker(QtWidgets.QMainWindow):
         axis_order = player.axis_order()
         axis_flips = player.axis_flips()
         cycles = player.particle_cycles()
+        mask_override = None if apply_to_mask else mask
         tracks = self._compute_timevarying_tracks(
             seed_points,
             phase,
             cycles,
             axis_order,
             axis_flips,
+            mask_override=mask_override,
         )
         total_steps = self.Nt * cycles
         player.set_precomputed_tracks(tracks, seed_phase=phase, steps=total_steps)
@@ -3630,6 +3656,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         cycles: int,
         axis_order: str,
         axis_flips: tuple,
+        mask_override: Optional[np.ndarray] = None,
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
         if seed_points is None or seed_points.size == 0:
             return []
@@ -3648,9 +3675,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             tracks[idx][0] = positions[idx]
         for step in range(total_steps):
             t = (seed_phase - 1 + step) % self.Nt
-            mask = self._current_vel_mask(t)
-            if mask is None or not np.any(mask):
-                continue
+            if mask_override is None:
+                mask = self._current_vel_mask(t)
+                if mask is None or not np.any(mask):
+                    continue
+            else:
+                mask = mask_override
             base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
             vel_t = base_vel
             if axis_order != "XYZ" or any(axis_flips):
