@@ -93,6 +93,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self._vel_raw = self.pack.vel
         self._vel_mask = None
+        self._mask_display_enabled = True
             
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
@@ -316,6 +317,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_refine_roi_phase = QtWidgets.QPushButton("Refine ROI (this phase)")
         self.btn_view_streamline = QtWidgets.QPushButton("View streamline")
         self.btn_clear_mask = QtWidgets.QPushButton("Clear mask")
+        self.btn_mask_toggle = QtWidgets.QPushButton("Mask: ON")
+        self.btn_mask_toggle.setCheckable(True)
+        self.btn_mask_toggle.setChecked(True)
         self.btn_refine_roi_all = QtWidgets.QPushButton("Refine ROI (all phases)")
         self.chk_negative_points = QtWidgets.QCheckBox("Enable negative points")
         self.chk_negative_points.stateChanged.connect(self._on_negative_points_toggle)
@@ -324,6 +328,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         pcmra_ctrl.addWidget(self.btn_refine_roi_all, 1, 2)
         pcmra_ctrl.addWidget(self.btn_view_streamline, 1, 3)
         pcmra_ctrl.addWidget(self.btn_clear_mask, 1, 4)
+        pcmra_ctrl.addWidget(self.btn_mask_toggle, 1, 5)
         pcmra_ctrl.setColumnStretch(9, 1)
         self.pcmra_refine_widget = QtWidgets.QWidget()
         self.pcmra_refine_widget.setLayout(pcmra_ctrl)
@@ -556,6 +561,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.btn_refine_roi_all.clicked.connect(self.refine_roi_pcmra_all_phases)
         self.btn_view_streamline.clicked.connect(self.on_view_streamline)
         self.btn_clear_mask.clicked.connect(self.on_clear_mask)
+        self.btn_mask_toggle.clicked.connect(self._on_mask_toggle)
         self.btn_save.clicked.connect(self.save_to_mvtrack_h5)
         self.btn_convert_stl.clicked.connect(self.convert_to_stl)
         self.btn_cine_gif.clicked.connect(self.export_cine_gif)
@@ -711,6 +717,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_copy_regional,
             self.btn_cine_inference,
             self.btn_line_apply,
+            self.btn_mask_toggle,
         ):
             btn.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
 
@@ -919,6 +926,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
 
         self._vel_mask = mask != 0
+        self._mask_display_enabled = True
+        self._sync_mask_toggle()
         if self._cur_phase is not None:
             t = int(self._cur_phase)
         else:
@@ -934,6 +943,8 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._vel_mask is None:
             return
         self._vel_mask = None
+        self._mask_display_enabled = False
+        self._sync_mask_toggle()
         if self._cur_phase is not None:
             t = int(self._cur_phase)
         else:
@@ -941,6 +952,22 @@ class ValveTracker(QtWidgets.QMainWindow):
         if 0 <= t < self.Nt:
             self._cur_phase = None
             self.set_phase(t)
+
+    def _on_mask_toggle(self) -> None:
+        self._mask_display_enabled = bool(self.btn_mask_toggle.isChecked())
+        self._sync_mask_toggle()
+        if self._cur_phase is not None:
+            t = int(self._cur_phase)
+        else:
+            t = int(self.slider.value()) - 1
+        if 0 <= t < self.Nt:
+            self._cur_phase = None
+            self.set_phase(t)
+
+    def _sync_mask_toggle(self) -> None:
+        label = "Mask: ON" if self._mask_display_enabled else "Mask: OFF"
+        self.btn_mask_toggle.setText(label)
+        self.btn_mask_toggle.setChecked(self._mask_display_enabled)
 
     def try_restore_state(self):
         st_path = self.tracking_path or mvtrack_path_for_folder(self.work_folder)
@@ -1564,6 +1591,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             self._syncing_cine_line = False
 
         Ipcm, Ivelmag, _, _, extras = self.reslice_for_phase(t)
+        Ipcm, Ivelmag, extras = self._apply_mask_to_reslice(Ipcm, Ivelmag, extras)
         vel_auto_levels = self._vel_auto_levels_enabled()
         pcmra_auto_levels = self._pcmra_auto_once
         self._set_image_keep_zoom("pcmra", Ipcm, auto_levels=pcmra_auto_levels)
@@ -1681,6 +1709,10 @@ class ValveTracker(QtWidgets.QMainWindow):
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
 
         extra_scalars: Dict[str, np.ndarray] = {}
+        if self._vel_mask is not None:
+            mask = self._current_vel_mask(t)
+            if mask is not None and np.any(mask):
+                extra_scalars["mask"] = mask.astype(np.float32)
         if self.pack.ke is not None and self.pack.ke.ndim == 4:
             extra_scalars["ke"] = self.pack.ke[:, :, :, t].astype(np.float32)
         if self.pack.vortmag is not None and self.pack.vortmag.ndim == 4:
@@ -1720,12 +1752,29 @@ class ValveTracker(QtWidgets.QMainWindow):
             return extras.get("vortmag", np.zeros_like(Ivelmag))
         return Ivelmag
 
+    def _apply_mask_to_reslice(
+        self, Ipcm: np.ndarray, Ivelmag: np.ndarray, extras: Dict[str, np.ndarray]
+    ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+        if not self._mask_display_enabled:
+            return Ipcm, Ivelmag, extras
+        mask = extras.get("mask")
+        if mask is None:
+            return Ipcm, Ivelmag, extras
+        mask_bool = mask > 0.5
+        Ipcm = np.where(mask_bool, Ipcm, 0.0)
+        Ivelmag = np.where(mask_bool, Ivelmag, 0.0)
+        for key in ("ke", "vortmag"):
+            if key in extras:
+                extras[key] = np.where(mask_bool, extras[key], 0.0)
+        return Ipcm, Ivelmag, extras
+
     def on_display_changed(self, _text: str):
         if self._cur_phase is None:
             return
         self._remember_current_levels(self._current_display_mode)
         self._current_display_mode = self.display_selector.currentText()
         Ipcm, Ivelmag, _, _, extras = self.reslice_for_phase(self._cur_phase)
+        Ipcm, Ivelmag, extras = self._apply_mask_to_reslice(Ipcm, Ivelmag, extras)
         self._apply_display_colormap()
         self._set_image_keep_zoom(
             "vel", self._display_image(Ivelmag, extras), auto_levels=self._vel_auto_levels_enabled()
