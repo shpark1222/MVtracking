@@ -1319,23 +1319,35 @@ class ValveTracker(QtWidgets.QMainWindow):
         return out
 
     def _patient_to_voxel(self, xyz: np.ndarray) -> np.ndarray:
-        A = self.pack.geom.A
-        orgn4 = self.pack.geom.orgn4.reshape(3)
-        abc = np.linalg.solve(A, (xyz - orgn4).T).T
-        col = abc[:, 0]
-        row = abc[:, 1]
-        slc = abc[:, 2]
+        edges = self.pack.geom.edges
+        if edges is not None:
+            edges = np.asarray(edges, dtype=np.float64)
+            if edges.shape == (3, 4):
+                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+        if edges is None or edges.shape != (4, 4):
+            raise RuntimeError("Volume edges are required for patient/voxel mapping.")
+        xyz = np.asarray(xyz, dtype=np.float64)
+        hom = np.vstack([xyz.T, np.ones((1, xyz.shape[0]), dtype=np.float64)])
+        vox = np.linalg.inv(edges) @ hom
+        col = vox[0, :]
+        row = vox[1, :]
+        slc = vox[2, :]
         return np.column_stack([row, col, slc])
 
     def _voxel_to_patient(self, ijk: np.ndarray) -> np.ndarray:
-        A = self.pack.geom.A
-        orgn4 = self.pack.geom.orgn4.reshape(3)
+        edges = self.pack.geom.edges
+        if edges is not None:
+            edges = np.asarray(edges, dtype=np.float64)
+            if edges.shape == (3, 4):
+                edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+        if edges is None or edges.shape != (4, 4):
+            raise RuntimeError("Volume edges are required for patient/voxel mapping.")
         ijk = np.asarray(ijk, dtype=np.float64)
         col = ijk[:, 1]
         row = ijk[:, 0]
         slc = ijk[:, 2]
-        abc = np.column_stack([col, row, slc])
-        return (orgn4[None, :] + abc @ A.T)
+        hom = np.vstack([col, row, slc, np.ones((ijk.shape[0],), dtype=np.float64)])
+        return (edges @ hom)[:3, :].T
 
     def _voxel_to_patient_rotation(self, geom: VolGeom) -> Optional[np.ndarray]:
         edges = geom.edges
