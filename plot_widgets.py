@@ -167,6 +167,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_tracks_source = None
         self._pathline_items = []
         self._show_pathlines = False
+        self._rebuilding_view = False
 
         self._build_view()
 
@@ -175,7 +176,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         layout.addWidget(self.view)
 
     def _build_view(self):
-        self.view = SyncableGLViewWidget()
+        self.view = SyncableGLViewWidget(self)
         self.view.opts["distance"] = 200
         self.view.setBackgroundColor("k")
         self.view.cameraChanged.connect(self._on_view_camera_changed)
@@ -186,6 +187,8 @@ class StreamlineWindow(QtWidgets.QWidget):
             self.view.update()
 
     def _ensure_view(self):
+        if self._rebuilding_view:
+            return False
         needs_rebuild = False
         if self.view is None:
             needs_rebuild = True
@@ -209,13 +212,17 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._pathline_items = []
         self._particle_item = None
         self._contour_item = None
-        self._build_view()
-        if layout is not None:
-            layout.addWidget(self.view)
-        if self._streamlines and self._volume_shape is not None:
-            self.update_streamlines(self._streamlines, self._volume_shape)
-        if self._contour_points is not None and self._volume_shape is not None:
-            self.update_contour(self._contour_points, self._volume_shape)
+        self._rebuilding_view = True
+        try:
+            self._build_view()
+            if layout is not None:
+                layout.addWidget(self.view)
+            if self._streamlines and self._volume_shape is not None:
+                self.update_streamlines(self._streamlines, self._volume_shape, ensure_view=False)
+            if self._contour_points is not None and self._volume_shape is not None:
+                self.update_contour(self._contour_points, self._volume_shape)
+        finally:
+            self._rebuilding_view = False
         return True
 
     def _on_view_camera_changed(self):
@@ -285,8 +292,9 @@ class StreamlineWindow(QtWidgets.QWidget):
             pass
         self._contour_item = None
 
-    def update_streamlines(self, streamlines, volume_shape):
-        self._ensure_view()
+    def update_streamlines(self, streamlines, volume_shape, ensure_view: bool = True):
+        if ensure_view:
+            self._ensure_view()
         self.clear_streamlines()
         self._volume_shape = volume_shape
         self._streamlines = list(streamlines) if streamlines is not None else []
@@ -347,8 +355,9 @@ class StreamlineWindow(QtWidgets.QWidget):
             self._particle_tracks_source = "streamlines"
         self._update_particles(self._particle_tracks)
 
-    def update_particle_tracks(self, tracks, volume_shape):
-        self._ensure_view()
+    def update_particle_tracks(self, tracks, volume_shape, ensure_view: bool = True):
+        if ensure_view:
+            self._ensure_view()
         self._volume_shape = volume_shape
         self._particle_tracks = []
         self._particle_tracks_source = "precomputed"
