@@ -163,6 +163,8 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_step = 0
         self._particle_cycles = 1
         self._particle_cycle_index = 0
+        self._particle_tracks = []
+        self._particle_tracks_source = None
         self._pathline_items = []
         self._show_pathlines = False
 
@@ -251,7 +253,11 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._line_items = []
         if clear_prepared:
             self._prepared_streamlines = []
-        self._clear_pathlines()
+
+    def clear_particle_tracks(self) -> None:
+        self._particle_tracks = []
+        self._particle_tracks_source = None
+        self.clear_particles()
 
     def clear_particles(self):
         if self._particle_item is None:
@@ -331,7 +337,55 @@ class StreamlineWindow(QtWidgets.QWidget):
                 )
                 self.view.addItem(item)
                 self._line_items.append(item)
-        self._update_particles(self._prepared_streamlines)
+        if self._particle_tracks_source != "precomputed":
+            self._particle_tracks = list(self._prepared_streamlines)
+            self._particle_tracks_source = "streamlines"
+        self._update_particles(self._particle_tracks)
+
+    def update_particle_tracks(self, tracks, volume_shape):
+        self._volume_shape = volume_shape
+        self._particle_tracks = []
+        self._particle_tracks_source = "precomputed"
+        if tracks is None:
+            self._update_particles(self._particle_tracks)
+            return
+        prepared = []
+        magnitudes = []
+        for entry in tracks:
+            if entry is None:
+                continue
+            mags = None
+            line = entry
+            if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                line, mags = entry
+            if line is None or len(line) == 0:
+                continue
+            pts = np.asarray(line, dtype=np.float32)
+            mags_arr = None
+            if mags is not None:
+                mags_arr = np.asarray(mags, dtype=np.float32)
+                if mags_arr.shape[0] != pts.shape[0]:
+                    mags_arr = None
+                elif np.any(~np.isfinite(mags_arr)):
+                    mags_arr = None
+            if mags_arr is not None:
+                magnitudes.append(mags_arr)
+            prepared.append((pts, mags_arr))
+
+        mag_min = None
+        mag_max = None
+        if magnitudes:
+            all_mags = np.concatenate(magnitudes)
+            if all_mags.size > 0 and np.all(np.isfinite(all_mags)):
+                mag_min = float(np.min(all_mags))
+                mag_max = float(np.max(all_mags))
+        for line, mags in prepared:
+            pts = self._transform_points(line, volume_shape)
+            colors = self._streamline_colors(pts.shape[0], mags, mag_min, mag_max)
+            self._particle_tracks.append((pts, colors))
+        self._particle_step = 0
+        self._particle_cycle_index = 0
+        self._update_particles(self._particle_tracks)
 
     def set_show_streamlines(self, show: bool) -> None:
         show = bool(show)
@@ -359,12 +413,12 @@ class StreamlineWindow(QtWidgets.QWidget):
         if not self._show_pathlines:
             self._clear_pathlines()
         else:
-            self._update_particles(self._prepared_streamlines)
+            self._update_particles(self._particle_tracks)
 
     def set_particles_enabled(self, enabled: bool, interval_ms: int = 50) -> None:
         enabled = bool(enabled)
         if self._particles_enabled == enabled:
-            if enabled and interval_ms:
+            if enabled and interval_ms and interval_ms > 0:
                 self._particle_timer.setInterval(int(interval_ms))
             return
         self._particles_enabled = enabled
@@ -374,16 +428,21 @@ class StreamlineWindow(QtWidgets.QWidget):
         if self._particle_item is None:
             self._particle_item = gl.GLScatterPlotItem(size=4.0, pxMode=True)
             self.view.addItem(self._particle_item)
-        if interval_ms:
+        if interval_ms and interval_ms > 0:
             self._particle_timer.setInterval(int(interval_ms))
-        self._particle_timer.start()
-        self._update_particles(self._prepared_streamlines)
+            self._particle_timer.start()
+        else:
+            self._particle_timer.stop()
+        self._update_particles(self._particle_tracks)
+
+    def pause_particle_animation(self) -> None:
+        self._particle_timer.stop()
 
     def reset_particle_animation(self) -> None:
         self._particle_step = 0
         self._particle_cycle_index = 0
         if self._particles_enabled:
-            self._update_particles(self._prepared_streamlines)
+            self._update_particles(self._particle_tracks)
 
     def set_particle_cycles(self, cycles: int) -> None:
         cycles = max(1, int(cycles))
@@ -423,10 +482,14 @@ class StreamlineWindow(QtWidgets.QWidget):
         if self._show_pathlines:
             self._trim_pathlines(len(prepared_streamlines))
 
+    def set_particle_step(self, step: int) -> None:
+        self._particle_step = max(0, int(step))
+        self._update_particles(self._particle_tracks)
+
     def _advance_particles(self) -> None:
-        if not self._particles_enabled or not self._prepared_streamlines:
+        if not self._particles_enabled or not self._particle_tracks:
             return
-        max_len = max((pts.shape[0] for pts, _colors in self._prepared_streamlines), default=0)
+        max_len = max((pts.shape[0] for pts, _colors in self._particle_tracks), default=0)
         if max_len <= 1:
             return
         next_step = self._particle_step + 1
@@ -437,7 +500,7 @@ class StreamlineWindow(QtWidgets.QWidget):
             self._particle_step = 0
         else:
             self._particle_step = next_step
-        self._update_particles(self._prepared_streamlines)
+        self._update_particles(self._particle_tracks)
 
     def update_contour(self, contour_points, volume_shape):
         self.clear_contour()
@@ -615,6 +678,8 @@ class StreamlineGalleryWindow(QtWidgets.QWidget):
 class StreamlinePlayerWindow(QtWidgets.QWidget):
     phase_changed = QtCore.Signal(int)
     seed_requested = QtCore.Signal(int)
+    apply_requested = QtCore.Signal()
+    stop_requested = QtCore.Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -623,6 +688,9 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self._seed_mode = "mv"
         self._seed_points = None
         self._seed_phase = None
+        self._precomputed_tracks = None
+        self._precomputed_seed_phase = None
+        self._precomputed_steps = None
         self._phase_timer = QtCore.QTimer(self)
         self._phase_timer.timeout.connect(self._advance_phase_playback)
         self._phase_cycle_index = 0
@@ -663,9 +731,15 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.seed_spin.setRange(1, 5000)
         self.seed_spin.setValue(200)
         seed_group.addWidget(self.seed_spin)
+        self.apply_btn = QtWidgets.QPushButton("Apply", self)
+        self.apply_btn.clicked.connect(self._on_apply_clicked)
+        seed_group.addWidget(self.apply_btn)
         seed_mv_btn = QtWidgets.QPushButton("Seed from MV", self)
         seed_mv_btn.clicked.connect(self._on_seed_mv_clicked)
         seed_group.addWidget(seed_mv_btn)
+        pause_particles_btn = QtWidgets.QPushButton("Pause", self)
+        pause_particles_btn.clicked.connect(self._on_pause_particles_clicked)
+        seed_group.addWidget(pause_particles_btn)
         stop_particles_btn = QtWidgets.QPushButton("Stop", self)
         stop_particles_btn.clicked.connect(self._on_stop_particles_clicked)
         seed_group.addWidget(stop_particles_btn)
@@ -682,25 +756,25 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         controls_layout.addLayout(timing_group)
 
         visibility_row = QtWidgets.QHBoxLayout()
-        self.streamline_check = QtWidgets.QCheckBox("Show streamline", self)
-        self.streamline_check.setChecked(False)
-        self.streamline_check.toggled.connect(self._on_streamline_toggle)
-        visibility_row.addWidget(self.streamline_check)
+        self.particle_check = QtWidgets.QCheckBox("Visualize particle", self)
+        self.particle_check.setChecked(True)
+        self.particle_check.toggled.connect(self._on_particle_toggle)
+        visibility_row.addWidget(self.particle_check)
         self.pathline_check = QtWidgets.QCheckBox("Show pathline", self)
         self.pathline_check.setChecked(False)
         self.pathline_check.toggled.connect(self._on_pathline_toggle)
         visibility_row.addWidget(self.pathline_check)
         controls_layout.addLayout(visibility_row)
 
-        self.particle_check = QtWidgets.QCheckBox("Visualize particle", self)
-        self.particle_check.setChecked(True)
-        self.particle_check.toggled.connect(self._on_particle_toggle)
-        controls_layout.addWidget(self.particle_check)
+        self.streamline_check = QtWidgets.QCheckBox("Show streamline", self)
+        self.streamline_check.setChecked(False)
+        self.streamline_check.toggled.connect(self._on_streamline_toggle)
+        controls_layout.addWidget(self.streamline_check)
         controls_layout.addStretch(1)
 
         top_row.addWidget(controls_widget, 1)
         self.view = StreamlineWindow(parent=self)
-        self.view.set_particles_enabled(True, interval_ms=50)
+        self.view.set_particles_enabled(True, interval_ms=0)
         self.view.set_show_streamlines(False)
         self.view.set_show_pathlines(False)
         top_row.addWidget(self.view, 2)
@@ -716,10 +790,12 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         phase_row.addWidget(self.phase_slider)
         layout.addLayout(phase_row)
 
-    def set_phase_count(self, count: int) -> None:
+    def set_phase_count(self, count: int, seed_phase_max: Optional[int] = None) -> None:
         count = max(1, int(count))
         self.phase_slider.setRange(1, count)
-        self.seed_phase_spin.setRange(1, count)
+        if seed_phase_max is None:
+            seed_phase_max = count
+        self.seed_phase_spin.setRange(1, max(1, int(seed_phase_max)))
 
     def axis_order(self) -> str:
         return self.axis_order_combo.currentText()
@@ -763,15 +839,41 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
             self.phase_slider.setValue(self._phase)
         self.phase_changed.emit(self._phase)
 
+    def has_precomputed_tracks(self) -> bool:
+        return self._precomputed_tracks is not None
+
+    def set_precomputed_tracks(self, tracks, seed_phase: int, steps: int) -> None:
+        self._precomputed_tracks = tracks
+        self._precomputed_seed_phase = int(seed_phase)
+        self._precomputed_steps = int(steps)
+
+    def clear_precomputed_tracks(self) -> None:
+        self._precomputed_tracks = None
+        self._precomputed_seed_phase = None
+        self._precomputed_steps = None
+
+    def precomputed_seed_phase(self) -> Optional[int]:
+        return self._precomputed_seed_phase
+
+    def precomputed_steps(self) -> Optional[int]:
+        return self._precomputed_steps
+
+    def precomputed_tracks(self):
+        return self._precomputed_tracks
+
+    def _on_apply_clicked(self) -> None:
+        self.apply_requested.emit()
+
     def _on_seed_mv_clicked(self) -> None:
         self._seed_mode = "mv"
         self.seed_requested.emit(int(self.seed_spin.value()))
 
     def _on_stop_particles_clicked(self) -> None:
-        self.view.set_particles_enabled(False)
         self._phase_timer.stop()
-        if self.particle_check.isChecked():
-            self.particle_check.setChecked(False)
+        self.stop_requested.emit()
+
+    def _on_pause_particles_clicked(self) -> None:
+        self._phase_timer.stop()
 
     def _on_streamline_toggle(self, checked: bool) -> None:
         self.view.set_show_streamlines(bool(checked))
@@ -781,7 +883,7 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def _on_particle_toggle(self, checked: bool) -> None:
         if checked:
-            self.view.set_particles_enabled(True, interval_ms=50)
+            self.view.set_particles_enabled(True, interval_ms=0)
         else:
             self.view.set_particles_enabled(False)
 
@@ -800,12 +902,13 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         next_phase = self._phase + 1
         if next_phase > max_phase:
             next_phase = 1
-        seed_phase = int(self.seed_phase_spin.value())
-        if next_phase == seed_phase:
-            self._phase_cycle_index += 1
-            if self._phase_cycle_index >= self.particle_cycles():
-                self._phase_cycle_index = 0
-                self.view.reset_particle_animation()
+        if not self.has_precomputed_tracks():
+            seed_phase = int(self.seed_phase_spin.value())
+            if next_phase == seed_phase:
+                self._phase_cycle_index += 1
+                if self._phase_cycle_index >= self.particle_cycles():
+                    self._phase_cycle_index = 0
+                    self.view.reset_particle_animation()
         self.set_phase(next_phase)
 
 

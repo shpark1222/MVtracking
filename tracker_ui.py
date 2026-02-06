@@ -3175,6 +3175,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             lambda visible, g=gallery: self._on_streamline_gallery_visibility(g, visible)
         )
         player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
+        player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
+        player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         tabbed.destroyed.connect(
             lambda _obj=None, t=tabbed, g=gallery, p=player: self._on_streamline_tab_closed(t, g, p)
@@ -3182,7 +3184,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self._streamline_tabs.append(tabbed)
         self._streamline_galleries.append(gallery)
         self._streamline_players.append(player)
-        player.set_phase_count(self.Nt)
+        player.set_phase_count(self.Nt, seed_phase_max=self.Nt)
         player.set_phase(int(self.slider.value()))
         player.seed_phase_spin.setValue(int(self.slider.value()))
         tabbed.showMaximized()
@@ -3213,10 +3215,12 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         player = StreamlinePlayerWindow(self)
         player.setAttribute(QtCore.Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        player.set_phase_count(self.Nt)
+        player.set_phase_count(self.Nt, seed_phase_max=self.Nt)
         player.set_phase(int(self.slider.value()))
         player.seed_phase_spin.setValue(int(self.slider.value()))
         player.seed_requested.connect(lambda count, p=player: self._seed_streamlines_for_player(p, count))
+        player.apply_requested.connect(lambda p=player: self._apply_streamline_player(p))
+        player.stop_requested.connect(lambda p=player: self._stop_streamline_player(p))
         player.phase_changed.connect(lambda phase, p=player: self._update_streamline_player(p, phase))
         player.destroyed.connect(lambda _obj=None, p=player: self._on_streamline_player_closed(p))
         self._streamline_players.append(player)
@@ -3272,6 +3276,37 @@ class ValveTracker(QtWidgets.QMainWindow):
             window.update_contour(contour_voxel, mask.shape)
 
     def _update_streamline_player(self, player, phase: int) -> None:
+        if player is None:
+            return
+        if player.has_precomputed_tracks():
+            total_steps = player.precomputed_steps() or 1
+            step = max(0, min(int(phase) - 1, total_steps - 1))
+            seed_phase = player.precomputed_seed_phase() or 1
+            t = (seed_phase - 1 + step) % self.Nt
+            mask = self._current_vel_mask(t)
+            if mask is None or not np.any(mask):
+                QtWidgets.QMessageBox.information(
+                    self, "MV tracker", "No mask is available for the current phase."
+                )
+                return
+            if player.streamline_check.isChecked():
+                base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+                axis_order = player.axis_order()
+                axis_flips = player.axis_flips()
+                vel_t = base_vel
+                if axis_order != "XYZ" or any(axis_flips):
+                    vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+                seed_points = player.seed_points()
+                if seed_points is not None:
+                    streamlines = self._compute_streamlines_from_seeds(vel_t, mask, seed_points)
+                else:
+                    streamlines = self._compute_streamlines(vel_t, mask)
+                player.view.update_streamlines(streamlines, mask.shape)
+            contour_voxel = self._streamline_contour_voxel(t)
+            player.view.update_contour(contour_voxel, mask.shape)
+            player.view.set_particle_step(step)
+            player.view.pause_particle_animation()
+            return
         t = int(phase) - 1
         if t < 0 or t >= self.Nt:
             return
@@ -3504,13 +3539,101 @@ class ValveTracker(QtWidgets.QMainWindow):
                 self, "MV tracker", "No contour seeds overlap the current mask."
             )
             return
-        player.set_seed_points(np.array(valid_seeds, dtype=np.float32), phase=t)
+        seed_points = np.array(valid_seeds, dtype=np.float32)
+        player.set_seed_points(seed_points, phase=t)
+        axis_order = player.axis_order()
+        axis_flips = player.axis_flips()
+        cycles = player.particle_cycles()
+        tracks = self._compute_timevarying_tracks(seed_points, phase, cycles, axis_order, axis_flips)
+        total_steps = self.Nt * cycles
+        player.set_precomputed_tracks(tracks, seed_phase=phase, steps=total_steps)
+        player.view.update_particle_tracks(tracks, mask.shape)
+        player.set_phase_count(total_steps, seed_phase_max=self.Nt)
         if hasattr(player, "particle_check"):
             player.particle_check.setChecked(True)
-        player.view.set_particles_enabled(True, interval_ms=50)
-        player.set_phase(phase)
+        player.view.set_particles_enabled(True, interval_ms=0)
+        player.set_phase(1)
+        player.view.set_particle_step(0)
+        player.view.pause_particle_animation()
         if hasattr(player, "start_phase_playback"):
             player.start_phase_playback()
+
+    def _apply_streamline_player(self, player) -> None:
+        if player is None:
+            return
+        if player.seed_mode() == "mv":
+            self._seed_streamlines_for_player(player, int(player.seed_spin.value()))
+        else:
+            self._update_streamline_player(player, int(player.phase_slider.value()))
+        if hasattr(player, "particle_check"):
+            player.view.set_particles_enabled(player.particle_check.isChecked(), interval_ms=0)
+        if hasattr(player, "pathline_check"):
+            player.view.set_show_pathlines(player.pathline_check.isChecked())
+
+    def _stop_streamline_player(self, player) -> None:
+        if player is None:
+            return
+        player.clear_precomputed_tracks()
+        player.view.clear_particle_tracks()
+        player.set_phase_count(self.Nt, seed_phase_max=self.Nt)
+        player.set_phase(int(self.slider.value()))
+        player.view.pause_particle_animation()
+        self._update_streamline_player(player, int(self.slider.value()))
+
+    def _compute_timevarying_tracks(
+        self,
+        seed_points: np.ndarray,
+        seed_phase: int,
+        cycles: int,
+        axis_order: str,
+        axis_flips: tuple,
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
+        if seed_points is None or seed_points.size == 0:
+            return []
+        seed_phase = int(seed_phase)
+        cycles = max(1, int(cycles))
+        total_steps = self.Nt * cycles
+        step_size = 0.6
+        seed_points = np.asarray(seed_points, dtype=np.float32)
+        num_seeds = seed_points.shape[0]
+        positions = seed_points.copy()
+        tracks = [np.zeros((total_steps + 1, 3), dtype=np.float32) for _ in range(num_seeds)]
+        speeds = [np.zeros((total_steps + 1,), dtype=np.float32) for _ in range(num_seeds)]
+        alive = np.ones((num_seeds,), dtype=bool)
+        for idx in range(num_seeds):
+            tracks[idx][0] = positions[idx]
+        for step in range(total_steps):
+            t = (seed_phase - 1 + step) % self.Nt
+            mask = self._current_vel_mask(t)
+            if mask is None or not np.any(mask):
+                continue
+            base_vel = np.asarray(self._vel_raw[:, :, :, :, t], dtype=np.float32)
+            vel_t = base_vel
+            if axis_order != "XYZ" or any(axis_flips):
+                vel_t = transform_vector_components(base_vel, axis_order, axis_flips)
+            for idx in range(num_seeds):
+                pos = positions[idx]
+                if not alive[idx]:
+                    tracks[idx][step + 1] = pos
+                    continue
+                if not self._point_in_mask(pos, mask):
+                    alive[idx] = False
+                    tracks[idx][step + 1] = pos
+                    continue
+                vel = self._sample_velocity_at(vel_t, pos)
+                if not np.all(np.isfinite(vel)):
+                    alive[idx] = False
+                    tracks[idx][step + 1] = pos
+                    continue
+                speed = float(np.linalg.norm(vel))
+                speeds[idx][step + 1] = speed
+                if speed < 1e-6:
+                    tracks[idx][step + 1] = pos
+                    continue
+                pos = pos + step_size * vel / speed
+                positions[idx] = pos
+                tracks[idx][step + 1] = pos
+        return [(tracks[idx], speeds[idx]) for idx in range(num_seeds)]
 
     def _sample_velocity_at(self, vel_t: np.ndarray, pos: np.ndarray) -> np.ndarray:
         coords = np.array([[pos[0]], [pos[1]], [pos[2]]], dtype=np.float32)
