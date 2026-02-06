@@ -261,8 +261,9 @@ def cine_line_to_patient_xyz(
     line_xy: np.ndarray,
     cine_geom: CineGeom,
     cine_shape: Optional[Tuple[int, int]] = None,
+    use_display_axes: bool = False,
 ) -> np.ndarray:
-    if cine_shape is not None:
+    if cine_shape is not None and use_display_axes:
         return cine_display_pixel_to_patient(line_xy, cine_geom, cine_shape)
     ipp, row_dir, col_dir, ps_row, ps_col = _cine_geom_components(cine_geom)
     geom = DICOMGeometry2D(ipp=ipp, row_cos=row_dir, col_cos=col_dir, ps_row=ps_row, ps_col=ps_col)
@@ -291,8 +292,14 @@ def make_plane_from_cine_line(
     cine_geom: CineGeom,
     cine_shape: Optional[Tuple[int, int]] = None,
     angle_offset_deg: float = 0.0,
+    use_display_axes: bool = False,
 ):
-    P = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=cine_shape)
+    P = cine_line_to_patient_xyz(
+        line_xy,
+        cine_geom,
+        cine_shape=cine_shape,
+        use_display_axes=use_display_axes,
+    )
     c = P.mean(axis=0)
 
     n_cine = cine_plane_normal(cine_geom)
@@ -385,6 +392,7 @@ def reslice_plane_fixedN(
     line_xy: np.ndarray,
     cine_shape: Optional[Tuple[int, int]] = None,
     angle_offset_deg: float = 0.0,
+    use_display_axes: bool = False,
     Npix: int = 192,
     extra_scalars: Optional[Dict[str, np.ndarray]] = None,
 ):
@@ -393,6 +401,7 @@ def reslice_plane_fixedN(
         cine_geom,
         cine_shape=cine_shape,
         angle_offset_deg=angle_offset_deg,
+        use_display_axes=use_display_axes,
     )
     fov_half = auto_fov_from_line(line_xy, cine_geom)
 
