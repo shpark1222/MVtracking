@@ -97,8 +97,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             
         self.Nt = int(pack.pcmra.shape[3])
         self.Npix = 192
-        self._plane_use_display_axes = False
-        self._last_plane_debug = None
 
         keys = list(pack.cine_planes.keys())
         if "2ch" in pack.cine_planes:
@@ -1536,48 +1534,6 @@ class ValveTracker(QtWidgets.QMainWindow):
                 dot_val = float(np.dot(R[:, 2], normal_vec))
                 print(f"[mvtracking] voxel Z vs cine normal dot={dot_val:.4f}")
 
-    def _maybe_log_plane_debug(
-        self,
-        t: int,
-        line_xy: np.ndarray,
-        cine_geom: CineGeom,
-        angle_deg: float,
-        use_display_axes: bool,
-    ) -> None:
-        key = (
-            int(t),
-            bool(use_display_axes),
-            round(float(angle_deg), 3),
-            tuple(np.round(line_xy.reshape(-1), 3).tolist()),
-        )
-        if self._last_plane_debug == key:
-            return
-        self._last_plane_debug = key
-        try:
-            _, u, v, n = make_plane_from_cine_line(
-                line_xy,
-                cine_geom,
-                cine_shape=None if not use_display_axes else self._get_cine_frame_raw(self.active_cine_key, t).shape,
-                angle_offset_deg=angle_deg,
-                use_display_axes=use_display_axes,
-            )
-        except Exception:
-            return
-        col_vec = cine_geom.iop[:3]
-        row_vec = cine_geom.iop[3:6]
-        cine_n = np.cross(col_vec, row_vec)
-        nn = np.linalg.norm(cine_n)
-        cine_n = cine_n / (nn if nn > 0 else 1e-12)
-        dot_val = float(np.dot(n, cine_n))
-        print(
-            "[mvtracking] reslice plane "
-            f"u={np.array2string(u, precision=4, separator=',')} "
-            f"v={np.array2string(v, precision=4, separator=',')} "
-            f"n={np.array2string(n, precision=4, separator=',')} "
-            f"cine_n={np.array2string(cine_n, precision=4, separator=',')} "
-            f"dot(n,cine_n)={dot_val:.4f} use_display_axes={use_display_axes}"
-        )
-
     # ============================
     # Phase update
     # ============================
@@ -1763,7 +1719,6 @@ class ValveTracker(QtWidgets.QMainWindow):
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
-        use_display_axes = self._plane_use_display_axes
 
         extra_scalars: Dict[str, np.ndarray] = {}
         if self._vel_mask is not None:
@@ -1792,11 +1747,9 @@ class ValveTracker(QtWidgets.QMainWindow):
             line_xy=line_xy,
             cine_shape=img_raw.shape,
             angle_offset_deg=angle_deg,
-            use_display_axes=use_display_axes,
             Npix=self.Npix,
             extra_scalars=extra_scalars,
         )
-        self._maybe_log_plane_debug(t, line_xy, cine_geom, angle_deg, use_display_axes)
         Ipcm = Ipcm.T
         Ivelmag = Ivelmag.T
         Vn = Vn.T
@@ -2127,7 +2080,6 @@ class ValveTracker(QtWidgets.QMainWindow):
             cine_geom,
             cine_shape=cine_shape,
             angle_offset_deg=angle_deg,
-            use_display_axes=self._plane_use_display_axes,
         )
         fov_half = auto_fov_from_line(line_xy, cine_geom)
         scale = (2.0 * fov_half) / float(self.Npix - 1)
@@ -2488,20 +2440,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         cine_geom = self._get_cine_geom_raw(self.active_cine_key)
         img_raw = self._get_cine_frame_raw(self.active_cine_key, t)
         angle_deg = float(self.line_angle[t]) if 0 <= t < len(self.line_angle) else float(self.spin_line_angle.value())
-        use_display_axes = self._plane_use_display_axes
         try:
-            pts_xyz = cine_line_to_patient_xyz(
-                line_xy,
-                cine_geom,
-                cine_shape=img_raw.shape,
-                use_display_axes=use_display_axes,
-            )
+            pts_xyz = cine_line_to_patient_xyz(line_xy, cine_geom, cine_shape=img_raw.shape)
             center, u, v, _ = make_plane_from_cine_line(
                 line_xy,
                 cine_geom,
                 cine_shape=img_raw.shape,
                 angle_offset_deg=angle_deg,
-                use_display_axes=use_display_axes,
             )
         except Exception:
             return None
