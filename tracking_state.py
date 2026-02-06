@@ -35,8 +35,6 @@ def save_tracking_state_h5(
     cine_auto_once: bool,
     pcmra_levels: tuple,
     pcmra_auto_once: bool,
-    cine_flip: tuple,
-    cine_swap: str,
     segment_payload: Optional[dict] = None,
     segment_count: Optional[int] = None,
     plot_segments: Optional[bool] = None,
@@ -46,6 +44,8 @@ def save_tracking_state_h5(
     apply_segments: Optional[bool] = None,
     show_segment_labels: Optional[bool] = None,
     flip_flow: Optional[bool] = None,
+    axis_order: Optional[str] = None,
+    axis_flips: Optional[tuple] = None,
 ):
     Nt = len(line_norm)
 
@@ -87,8 +87,6 @@ def save_tracking_state_h5(
         g.attrs["cine_auto_once"] = int(bool(cine_auto_once))
         g.attrs["pcmra_levels_json"] = json.dumps(pcmra_levels)
         g.attrs["pcmra_auto_once"] = int(bool(pcmra_auto_once))
-        g.attrs["cine_flip_json"] = json.dumps(cine_flip)
-        g.attrs["cine_swap"] = str(cine_swap)
         if segment_payload is not None:
             g.attrs["segment_payload_json"] = json.dumps(segment_payload)
         if segment_count is not None:
@@ -122,6 +120,10 @@ def save_tracking_state_h5(
             g.attrs["show_segment_labels"] = int(bool(show_segment_labels))
         if flip_flow is not None:
             g.attrs["flip_flow"] = int(bool(flip_flow))
+        if axis_order is not None:
+            g.attrs["axis_order"] = str(axis_order)
+        if axis_flips is not None:
+            g.attrs["axis_flips_json"] = json.dumps(list(axis_flips))
 
 
 def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
@@ -134,14 +136,14 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         cine_auto_once = 1
         pcmra_levels = "[null, null]"
         pcmra_auto_once = 1
-        cine_flip = "[false, false, false]"
-        cine_swap = "X Y Z"
         segment_payload = "{}"
         segment_count = 6
         plot_segments = 0
         apply_segments = 0
         show_segment_labels = 0
         flip_flow = 0
+        axis_order = "XYZ"
+        axis_flips_json = "[false, false, false]"
         with h5py.File(path, "r") as f:
             if "/state/line_norm" not in f:
                 return None
@@ -191,14 +193,14 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             cine_auto_once = f["/state"].attrs.get("cine_auto_once", cine_auto_once)
             pcmra_levels = f["/state"].attrs.get("pcmra_levels_json", pcmra_levels)
             pcmra_auto_once = f["/state"].attrs.get("pcmra_auto_once", pcmra_auto_once)
-            cine_flip = f["/state"].attrs.get("cine_flip_json", cine_flip)
-            cine_swap = f["/state"].attrs.get("cine_swap", cine_swap)
             segment_payload = f["/state"].attrs.get("segment_payload_json", segment_payload)
             segment_count = f["/state"].attrs.get("segment_count", segment_count)
             plot_segments = f["/state"].attrs.get("plot_segments", plot_segments)
             apply_segments = f["/state"].attrs.get("apply_segments", apply_segments)
             show_segment_labels = f["/state"].attrs.get("show_segment_labels", show_segment_labels)
             flip_flow = f["/state"].attrs.get("flip_flow", flip_flow)
+            axis_order = f["/state"].attrs.get("axis_order", axis_order)
+            axis_flips_json = f["/state"].attrs.get("axis_flips_json", axis_flips_json)
 
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
         if line_angle is not None:
@@ -288,14 +290,14 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
             "cine_auto_once": int(cine_auto_once),
             "pcmra_levels_json": pcmra_levels,
             "pcmra_auto_once": int(pcmra_auto_once),
-            "cine_flip_json": cine_flip,
-            "cine_swap": str(cine_swap),
             "segment_payload_json": segment_payload,
             "segment_count": int(segment_count),
             "plot_segments": int(plot_segments),
             "apply_segments": int(apply_segments),
             "show_segment_labels": int(show_segment_labels),
             "flip_flow": int(flip_flow),
+            "axis_order": str(axis_order),
+            "axis_flips_json": str(axis_flips_json),
         }
     except Exception:
         return None

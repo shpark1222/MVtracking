@@ -2,10 +2,11 @@ import json
 import os
 import glob
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import h5py
 import numpy as np
+from scipy.io import loadmat
 
 
 @dataclass
@@ -13,6 +14,7 @@ class CineGeom:
     ipp: np.ndarray
     iop: np.ndarray
     ps: np.ndarray
+    edges: Optional[np.ndarray] = None
     axis_map: Optional[Dict[str, np.ndarray]] = None
 
 
@@ -20,12 +22,15 @@ class CineGeom:
 class VolGeom:
     orgn4: np.ndarray
     A: np.ndarray
+    edges: Optional[np.ndarray] = None
     axis_map: Optional[Dict[str, np.ndarray]] = None
     iop: Optional[np.ndarray] = None
     ipp0: Optional[np.ndarray] = None
+    ipps: Optional[np.ndarray] = None
     pixel_spacing: Optional[np.ndarray] = None
     slice_positions: Optional[np.ndarray] = None
     slice_order: Optional[np.ndarray] = None
+    td: Optional[float] = None
 
 
 @dataclass
@@ -36,6 +41,28 @@ class MVPack:
     geom: VolGeom
     ke: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
     vortmag: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
+
+
+def load_mrstruct(path: str) -> Tuple[np.ndarray, Dict[str, Optional[np.ndarray]]]:
+    md = loadmat(path, squeeze_me=True, struct_as_record=False)
+    ms = md["mrStruct"]
+    edges = getattr(ms, "edges", None)
+    vox = getattr(ms, "vox", None)
+    td = None
+    user = getattr(ms, "user", None)
+    if user is not None:
+        td = getattr(user, "TD", None)
+        if td is not None:
+            try:
+                td = float(np.asarray(td).reshape(-1)[0])
+            except Exception:
+                td = None
+    meta = {
+        "edges": np.array(edges) if edges is not None else None,
+        "vox": np.array(vox) if vox is not None else None,
+        "td": td,
+    }
+    return np.array(ms.dataAy), meta
 
 
 def _read_ds(f: h5py.File, path: str) -> np.ndarray:
@@ -57,6 +84,62 @@ def _read_axis_map_json(group) -> Optional[Dict[str, np.ndarray]]:
         if key in data:
             out[key] = np.asarray(data[key], dtype=np.float64).reshape(3)
     return out if out else None
+
+
+def _edges_to_A_orgn4(edges: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    edges = np.asarray(edges, dtype=np.float64)
+    if edges.shape == (3, 4):
+        edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+    if edges.shape != (4, 4):
+        raise ValueError(f"Invalid edges shape: {edges.shape}")
+    return edges[:3, :3].copy(), edges[:3, 3].copy()
+
+
+def _build_cine_edges(iop: np.ndarray, ipp: np.ndarray, ps: np.ndarray, slice_step: float) -> np.ndarray:
+    # edges: voxel index [x(col), y(row), z(slice), 1] -> patient(mm)
+    X = iop[:3] / (np.linalg.norm(iop[:3]) if np.linalg.norm(iop[:3]) > 0 else 1.0)
+    Y = iop[3:] / (np.linalg.norm(iop[3:]) if np.linalg.norm(iop[3:]) > 0 else 1.0)
+    Z = np.cross(X, Y)
+    Z = Z / (np.linalg.norm(Z) if np.linalg.norm(Z) > 0 else 1.0)
+    edges = np.eye(4, dtype=np.float64)
+    edges[:3, 0] = X * ps[1]
+    edges[:3, 1] = Y * ps[0]
+    edges[:3, 2] = Z * slice_step
+    edges[:3, 3] = ipp
+    return edges
+
+
+def _sanity_check_cine_edges(label: str, cine_geom: CineGeom) -> None:
+    edges = cine_geom.edges
+    if edges is None:
+        return
+    edges = np.asarray(edges, dtype=np.float64)
+    if edges.shape == (3, 4):
+        edges = np.vstack([edges, np.array([0.0, 0.0, 0.0, 1.0])])
+    if edges.shape != (4, 4):
+        return
+
+    col_vec = edges[:3, 0]
+    row_vec = edges[:3, 1]
+    row_n = np.linalg.norm(row_vec)
+    col_n = np.linalg.norm(col_vec)
+    if row_n < 1e-8 or col_n < 1e-8:
+        print(f"[mvtracking] cine edges sanity check failed (zero spacing): {label}")
+        return
+
+    row_dir = row_vec / row_n
+    col_dir = col_vec / col_n
+    iop = cine_geom.iop.reshape(6)
+    col_ref = iop[:3] / (np.linalg.norm(iop[:3]) if np.linalg.norm(iop[:3]) > 0 else 1.0)
+    row_ref = iop[3:] / (np.linalg.norm(iop[3:]) if np.linalg.norm(iop[3:]) > 0 else 1.0)
+
+    dot_row = float(np.dot(row_dir, row_ref))
+    dot_col = float(np.dot(col_dir, col_ref))
+    if dot_row < 0.5 or dot_col < 0.5:
+        print(
+            "[mvtracking] cine edges sanity warning "
+            f"({label}) dot_row={dot_row:.3f} dot_col={dot_col:.3f}"
+        )
 
 
 def find_mvpack_in_folder(folder: str) -> str:
@@ -82,22 +165,6 @@ def find_mvpack_in_folder(folder: str) -> str:
     raise FileNotFoundError(f"mvpack.h5 not found under: {folder}")
 
 
-def _coerce_cine_axes(img: np.ndarray, ny: int, nx: int) -> np.ndarray:
-    if img.ndim != 3:
-        return img
-
-    shape = img.shape
-    for t_axis in range(3):
-        spatial_axes = [ax for ax in range(3) if ax != t_axis]
-        if shape[spatial_axes[0]] == ny and shape[spatial_axes[1]] == nx:
-            return np.transpose(img, (spatial_axes[0], spatial_axes[1], t_axis)).copy()
-        if shape[spatial_axes[0]] == nx and shape[spatial_axes[1]] == ny:
-            return np.transpose(img, (spatial_axes[1], spatial_axes[0], t_axis)).copy()
-
-    if shape[0] < shape[1] and shape[0] < shape[2]:
-        return np.transpose(img, (1, 2, 0)).copy()
-
-    return img
 
 
 def load_mvpack_h5(h5_path: str) -> MVPack:
@@ -120,11 +187,14 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
         return float(default)
 
     with h5py.File(h5_path, "r") as f:
-        if "/geom/orgn4" not in f or "/geom/A" not in f:
-            raise RuntimeError("mvpack.h5 missing /geom/orgn4 or /geom/A")
-
-        orgn4 = _read_ds(f, "/geom/orgn4").reshape(3).astype(np.float64)
-        A = _read_ds(f, "/geom/A").astype(np.float64)
+        geom_edges = _read_ds(f, "/geom/edges").astype(np.float64) if "/geom/edges" in f else None
+        if geom_edges is not None:
+            A, orgn4 = _edges_to_A_orgn4(geom_edges)
+        else:
+            if "/geom/orgn4" not in f or "/geom/A" not in f:
+                raise RuntimeError("mvpack.h5 missing /geom/orgn4 or /geom/A (or /geom/edges)")
+            orgn4 = _read_ds(f, "/geom/orgn4").reshape(3).astype(np.float64)
+            A = _read_ds(f, "/geom/A").astype(np.float64)
         geom_axis_map = _read_axis_map_json(f["/geom"]) if "/geom" in f else None
         geom_iop = _read_ds(f, "/geom/IOP").reshape(6).astype(np.float64) if "/geom/IOP" in f else None
         geom_ipp0 = _read_ds(f, "/geom/IPP0").reshape(3).astype(np.float64) if "/geom/IPP0" in f else None
@@ -132,6 +202,9 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
         geom_slice_positions = _read_ds(f, "/geom/slice_positions").astype(np.float64) if "/geom/slice_positions" in f else None
         geom_slice_order = _read_ds(f, "/geom/slice_order").astype(np.int32) if "/geom/slice_order" in f else None
         geom_ipps = _read_ds(f, "/geom/IPPs").astype(np.float64) if "/geom/IPPs" in f else None
+        geom_td = _read_ds(f, "/geom/TD").astype(np.float64) if "/geom/TD" in f else None
+        if geom_td is not None:
+            geom_td = float(np.asarray(geom_td).reshape(-1)[0])
 
         vel_path = _first_existing_path(f, ["/data/vel"])
         if vel_path is None:
@@ -185,7 +258,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                 )
 
         if geom_slice_order is not None:
-            print("[mvtracking] slice_order found -> IGNORED")
+            print("[mvtracking] slice_order found -> stored for slice mapping")
 
         print(
             "[mvtracking] geom axis_map="
@@ -225,7 +298,7 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
 
             img = _read_ds(f, img_path)
             if img.ndim == 3:
-                img = _coerce_cine_axes(img, pcmra.shape[0], pcmra.shape[1])
+                pass
             elif img.ndim == 2:
                 img = img[:, :, None]
             img = img.astype(np.float32)
@@ -233,14 +306,19 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
             ipp = _read_ds(f, ipp_path).reshape(3).astype(np.float64)
             iop = _read_ds(f, iop_path).reshape(6).astype(np.float64)
             ps = _read_ds(f, ps_path).reshape(2).astype(np.float64)
+            edges = _read_ds(f, base + "/edges").astype(np.float64) if base + "/edges" in f else None
+            if edges is None:
+                edges = _build_cine_edges(iop, ipp, ps, 1.0)
+                print(f"[mvtracking] cine edges missing for {key}; using DICOM fallback.")
 
             group = f[base]
             cine_axis_map = _read_axis_map_json(group)
 
             cine_planes[key.lower()] = {
                 "img": img,
-                "geom": CineGeom(ipp=ipp, iop=iop, ps=ps, axis_map=cine_axis_map),
+                "geom": CineGeom(ipp=ipp, iop=iop, ps=ps, edges=edges, axis_map=cine_axis_map),
             }
+            _sanity_check_cine_edges(key.lower(), cine_planes[key.lower()]["geom"])
 
         if not cine_planes:
             raise RuntimeError("No cine planes found under /cine (expected cineI+IPP+IOP+PixelSpacing)")
@@ -252,12 +330,15 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
             geom=VolGeom(
                 orgn4=orgn4,
                 A=A,
+                edges=geom_edges,
                 axis_map=geom_axis_map,
                 iop=geom_iop,
                 ipp0=geom_ipp0,
+                ipps=geom_ipps,
                 pixel_spacing=geom_ps,
                 slice_positions=geom_slice_positions,
                 slice_order=geom_slice_order,
+                td=geom_td,
             ),
             ke=ke,
             vortmag=vortmag,
