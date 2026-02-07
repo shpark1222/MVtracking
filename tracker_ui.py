@@ -73,22 +73,22 @@ class ValveTracker(QtWidgets.QMainWindow):
         try:
             # pcmra: (X, Y, Z, T) -> (Y, X, Z, T)
             if pack.pcmra.ndim == 4:
-                pack.pcmra = np.transpose(pack.pcmra, (1, 0, 2, 3))
+                pack.pcmra = np.transpose(pack.pcmra, (0, 1, 2, 3))
 
             # vel: (X, Y, Z, 3, T) -> (Y, X, Z, 3, T)
             if pack.vel is not None and pack.vel.ndim == 5:
-                pack.vel = np.transpose(pack.vel, (1, 0, 2, 3, 4))
+                pack.vel = np.transpose(pack.vel, (0, 1, 2, 3, 4))
 
                 # swap velocity components too: (vx, vy, vz) -> (vy, vx, vz)
-                pack.vel = pack.vel[:, :, :, [1, 0, 2], :]
+                pack.vel = pack.vel[:, :, :, [0, 1, 2], :]
 
             # optional scalar volumes that follow spatial axes
             if getattr(pack, "ke", None) is not None and pack.ke.ndim == 4:
-                pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
+                pack.ke = np.transpose(pack.ke, (0, 1, 2, 3))
             if getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
-                pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
+                pack.vortmag = np.transpose(pack.vortmag, (0, 1, 2, 3))
             if getattr(pack, "qcriterion", None) is not None and pack.qcriterion.ndim == 4:
-                pack.qcriterion = np.transpose(pack.qcriterion, (1, 0, 2, 3))
+                pack.qcriterion = np.transpose(pack.qcriterion, (0, 1, 2, 3))
 
         except Exception:
             pass
@@ -901,9 +901,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         mask = np.asarray(mask_data)
         # Keep mask aligned with velocity/pcmra axis normalization.
         if mask.ndim == 3:
-            mask = np.transpose(mask, (1, 0, 2))
+            mask = np.transpose(mask, (0, 1, 2))
         elif mask.ndim == 4:
-            mask = np.transpose(mask, (1, 0, 2, 3))
+            mask = np.transpose(mask, (0, 1, 2, 3))
         if mask.ndim not in (3, 4):
             QtWidgets.QMessageBox.critical(
                 self,
