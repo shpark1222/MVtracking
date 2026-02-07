@@ -73,13 +73,13 @@ class ValveTracker(QtWidgets.QMainWindow):
         try:
             # pcmra: (X, Y, Z, T) -> (Y, X, Z, T)
             if pack.pcmra.ndim == 4:
-                pack.pcmra = np.transpose(pack.pcmra, (0, 1, 2, 3))
+                pack.pcmra = np.transpose(pack.pcmra, (1, 0, 2, 3))
 
             # vel: (X, Y, Z, 3, T) -> (Y, X, Z, 3, T)
             if pack.vel is not None and pack.vel.ndim == 5:
-                pack.vel = np.transpose(pack.vel, (0, 1, 2, 3, 4))
+                pack.vel = np.transpose(pack.vel, (1, 0, 2, 3, 4))
 
-                # swap velocity components too: (vx, vy, vz) -> (vy, vx, vz)
+                # (vx, vy, vz)
                 pack.vel = pack.vel[:, :, :, [0, 1, 2], :]
 
             # optional scalar volumes that follow spatial axes
