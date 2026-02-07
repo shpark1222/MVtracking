@@ -207,7 +207,7 @@ def read_cine(folder, log_fn=None):
             raise RuntimeError(f"Unsupported cine pixel_array shape: {arr.shape}")
 
     cine = np.stack(frames, axis=0)             # (Nt, Ny, Nx)
-    cine = np.transpose(cine, (1, 2, 0))        # (Ny, Nx, Nt)
+    cine = np.transpose(cine, (2, 1, 0))        # (Nx, Ny, Nt)
 
     ds0 = infos[0][2]
     edges = cine_edges_from_dicom(ds0)
