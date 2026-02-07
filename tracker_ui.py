@@ -87,6 +87,8 @@ class ValveTracker(QtWidgets.QMainWindow):
                 pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
             if getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
                 pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
+            if getattr(pack, "qcriterion", None) is not None and pack.qcriterion.ndim == 4:
+                pack.qcriterion = np.transpose(pack.qcriterion, (1, 0, 2, 3))
 
         except Exception:
             pass
@@ -3410,6 +3412,7 @@ class ValveTracker(QtWidgets.QMainWindow):
                 player.view.update_streamlines(streamlines, mask.shape)
             contour_voxel = self._streamline_contour_voxel(t)
             player.view.update_contour(contour_voxel, mask.shape)
+            self._update_streamline_player_isosurface(player, t)
             player.view.set_particle_step(step)
             player.view.pause_particle_animation()
             return
@@ -3443,6 +3446,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.view.set_particle_cycles(player.particle_cycles())
         player.view.update_streamlines(streamlines, mask.shape)
         player.view.update_contour(contour_voxel, mask.shape)
+        self._update_streamline_player_isosurface(player, t)
 
     def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
         if self._vel_mask is None:
@@ -3450,6 +3454,23 @@ class ValveTracker(QtWidgets.QMainWindow):
         if self._vel_mask.ndim == 4:
             return self._vel_mask[:, :, :, t]
         return self._vel_mask
+
+    def _update_streamline_player_isosurface(self, player, t: int) -> None:
+        qcriterion = getattr(self.pack, "qcriterion", None)
+        if qcriterion is None or not player.isosurface_enabled():
+            player.view.update_isosurface(None, 0.0, enabled=False)
+            player.set_iso_volume(None)
+            return
+        if t < 0 or t >= qcriterion.shape[3]:
+            player.view.update_isosurface(None, 0.0, enabled=False)
+            player.set_iso_volume(None)
+            return
+        threshold = float(player.isosurface_threshold())
+        volume = np.asarray(qcriterion[:, :, :, t], dtype=np.float32)
+        player.view.update_isosurface(volume, threshold, enabled=True)
+        count = int(np.count_nonzero(np.isfinite(volume) & (volume > threshold)))
+        volume_ml = float(count * self._voxel_volume_m3 * 1e6)
+        player.set_iso_volume(volume_ml)
 
     def _compute_streamlines(self, vel_t: np.ndarray, mask: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         max_seeds = 200

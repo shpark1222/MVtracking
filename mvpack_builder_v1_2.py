@@ -270,6 +270,40 @@ def compute_vorticity(vel, dx, dy, dz):
     return vort, vortmag
 
 
+def compute_qcriterion(vel, dx, dy, dz):
+    dx, dy, dz = dx * 1e-3, dy * 1e-3, dz * 1e-3
+    Ny, Nx, Nz, _, Nt = vel.shape
+    qcrit = np.zeros((Ny, Nx, Nz, Nt), np.float32)
+
+    for t in range(Nt):
+        vx = median_filter(vel[..., 0, t], 3)
+        vy = median_filter(vel[..., 1, t], 3)
+        vz = median_filter(vel[..., 2, t], 3)
+
+        dvx_dy, dvx_dx, dvx_dz = np.gradient(vx, dy, dx, dz)
+        dvy_dy, dvy_dx, dvy_dz = np.gradient(vy, dy, dx, dz)
+        dvz_dy, dvz_dx, dvz_dz = np.gradient(vz, dy, dx, dz)
+
+        s11 = dvx_dx
+        s22 = dvy_dy
+        s33 = dvz_dz
+        s12 = 0.5 * (dvx_dy + dvy_dx)
+        s13 = 0.5 * (dvx_dz + dvz_dx)
+        s23 = 0.5 * (dvy_dz + dvz_dy)
+        norm_s2 = s11 ** 2 + s22 ** 2 + s33 ** 2 + 2.0 * (s12 ** 2 + s13 ** 2 + s23 ** 2)
+
+        w12 = 0.5 * (dvx_dy - dvy_dx)
+        w13 = 0.5 * (dvx_dz - dvz_dx)
+        w23 = 0.5 * (dvy_dz - dvz_dy)
+        norm_w2 = 2.0 * (w12 ** 2 + w13 ** 2 + w23 ** 2)
+
+        qcrit[..., t] = 0.5 * (norm_w2 - norm_s2)
+
+    qcrit = np.nan_to_num(qcrit, nan=0.0, posinf=0.0, neginf=0.0)
+    qcrit[qcrit < 0] = 0
+    return qcrit
+
+
 # ============================
 # UI
 # ============================
@@ -411,6 +445,12 @@ class PackBuilder(QtWidgets.QWidget):
             geom["PixelSpacing"][0],
             geom["sliceStep"][0],
         )
+        qcrit = compute_qcriterion(
+            vel,
+            geom["PixelSpacing"][1],
+            geom["PixelSpacing"][0],
+            geom["sliceStep"][0],
+        )
 
         base_dir = self.dcm4d or self.mr or os.getcwd()
         default_path = os.path.join(base_dir, "mvpack.h5")
@@ -432,6 +472,7 @@ class PackBuilder(QtWidgets.QWidget):
             g["ke"] = ke
             g["vort"] = vort
             g["vortmag"] = vortmag
+            g["qcriterion"] = qcrit
 
             gg = f.create_group("geom")
             gg["edges"] = geom["edges"]

@@ -41,6 +41,7 @@ class MVPack:
     geom: VolGeom
     ke: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
     vortmag: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
+    qcriterion: Optional[np.ndarray] = None  # (Ny,Nx,Nz,Nt)
 
 
 def load_mrstruct(path: str) -> Tuple[np.ndarray, Dict[str, Optional[np.ndarray]]]:
@@ -282,6 +283,11 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
                     vort[:, :, :, 0, :] ** 2 + vort[:, :, :, 1, :] ** 2 + vort[:, :, :, 2, :] ** 2
                 ).astype(np.float32)
 
+        qcriterion = None
+        qcrit_path = _first_existing_path(f, ["/data/qcriterion"])
+        if qcrit_path is not None:
+            qcriterion = _read_ds(f, qcrit_path).astype(np.float32)
+
         if "/cine" not in f:
             raise RuntimeError("mvpack.h5 missing /cine group")
 
@@ -342,4 +348,5 @@ def load_mvpack_h5(h5_path: str) -> MVPack:
             ),
             ke=ke,
             vortmag=vortmag,
+            qcriterion=qcriterion,
         )
