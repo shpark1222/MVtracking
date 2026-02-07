@@ -901,9 +901,9 @@ class ValveTracker(QtWidgets.QMainWindow):
         mask = np.asarray(mask_data)
         # Keep mask aligned with velocity/pcmra axis normalization.
         if mask.ndim == 3:
-            mask = np.transpose(mask, (0, 1, 2))
+            mask = np.transpose(mask, (1, 0, 2))
         elif mask.ndim == 4:
-            mask = np.transpose(mask, (0, 1, 2, 3))
+            mask = np.transpose(mask, (1, 0, 2, 3))
         if mask.ndim not in (3, 4):
             QtWidgets.QMessageBox.critical(
                 self,
