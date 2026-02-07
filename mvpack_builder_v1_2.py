@@ -49,7 +49,11 @@ def cine_edges_from_dicom(ds0) -> np.ndarray:
 
     X = _unit(iop[:3])  # +j (col)
     Y = _unit(iop[3:])  # +i (row)
-    Z = _unit(np.cross(X, Y))
+    Z_raw = np.cross(X, Y)
+    if not np.isfinite(Z_raw).all() or np.linalg.norm(Z_raw) < 1e-6:
+        Z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        Z = _unit(Z_raw)
 
     slice_step = float(
         getattr(ds0, "SpacingBetweenSlices", None)
@@ -81,7 +85,11 @@ def volume_edges_from_dicom_series(infos) -> np.ndarray:
     ipps = np.array([np.array(ds.ImagePositionPatient, float) for _, _, ds in infos], dtype=np.float64)
 
     # slice direction + spacing
-    slc_dir = _unit(np.cross(col_dir, row_dir))
+    slc_raw = np.cross(col_dir, row_dir)
+    if not np.isfinite(slc_raw).all() or np.linalg.norm(slc_raw) < 1e-6:
+        slc_dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        slc_dir = _unit(slc_raw)
 
     if len(ipps) >= 2:
         d = ipps[-1] - ipps[0]
@@ -149,7 +157,11 @@ def estimate_volume_geom(folder):
     # slice 관련도 저장 (axis_map은 DICOM 기준이지만 여기선 참고용)
     col_dir = _unit(iop[:3])
     row_dir = _unit(iop[3:])
-    slc_dir = _unit(np.cross(col_dir, row_dir))
+    slc_raw = np.cross(col_dir, row_dir)
+    if not np.isfinite(slc_raw).all() or np.linalg.norm(slc_raw) < 1e-6:
+        slc_dir = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    else:
+        slc_dir = _unit(slc_raw)
     if len(ipps) >= 2:
         d = ipps[-1] - ipps[0]
         if np.dot(slc_dir, d) < 0:
