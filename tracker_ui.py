@@ -154,6 +154,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.play_fps = 10.0
         self._play_timer = QtCore.QTimer(self)
         self.line_angle = [0.0] * self.Nt
+        self._confirmed_surface_normals: List[Optional[np.ndarray]] = [None] * self.Nt
         self.metrics_seg4 = {}
         self.metrics_seg6 = {}
         self._segment_label_items_pcm = []
@@ -681,17 +682,20 @@ class ValveTracker(QtWidgets.QMainWindow):
         self.spin_line_angle.setRange(-90.0, 90.0)
         self.spin_line_angle.setSingleStep(1.0)
         self.spin_line_angle.setValue(0.0)
+        self.btn_line_confirm = QtWidgets.QPushButton("Confirm")
         line_ctrl_row.addWidget(self.btn_line_copy)
         line_ctrl_row.addWidget(self.btn_line_paste)
         line_ctrl_row.addWidget(self.btn_line_forward)
         line_ctrl_row.addWidget(QtWidgets.QLabel("Angle (deg)"))
         line_ctrl_row.addWidget(self.spin_line_angle)
+        line_ctrl_row.addWidget(self.btn_line_confirm)
         line_ctrl_row.addStretch(1)
         left_controls_layout.addLayout(line_ctrl_row)
         self.btn_line_copy.clicked.connect(self.copy_line_state)
         self.btn_line_paste.clicked.connect(self.paste_line_state)
         self.btn_line_forward.clicked.connect(self.copy_line_forward)
         self.spin_line_angle.valueChanged.connect(self.on_line_angle_changed)
+        self.btn_line_confirm.clicked.connect(self.on_line_confirm)
 
         axis_row = QtWidgets.QHBoxLayout()
         axis_row.addWidget(QtWidgets.QLabel("Axis order"))
@@ -713,6 +717,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             self.btn_line_copy,
             self.btn_line_paste,
             self.btn_line_forward,
+            self.btn_line_confirm,
             self.btn_cine_gif,
             self.btn_pcmra_gif,
             self.btn_vel_gif,
@@ -985,6 +990,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         self.line_norm = st.get("line_norm", self.line_norm)
         self.line_angle = st.get("line_angle", self.line_angle)
+        self._confirmed_surface_normals = st.get("surface_normals", self._confirmed_surface_normals)
         self.roi_state = st.get("roi_state", self.roi_state)
         self.roi_locked = st.get("roi_locked", self.roi_locked)
         try:
@@ -2526,6 +2532,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         state = self._get_roi_state(self.poly_roi_pcm)
         self.roi_state[t] = state
+        if 0 <= t < len(self._confirmed_surface_normals):
+            self._confirmed_surface_normals[t] = None
         self.apply_roi_state_both(state)
         self.update_spline_overlay(t)
         self.compute_current(update_only=True)
@@ -2551,6 +2559,8 @@ class ValveTracker(QtWidgets.QMainWindow):
             return
         state = self._get_roi_state(self.poly_roi_vel)
         self.roi_state[t] = state
+        if 0 <= t < len(self._confirmed_surface_normals):
+            self._confirmed_surface_normals[t] = None
         self.apply_roi_state_both(state)
         self.update_spline_overlay(t)
         self.compute_current(update_only=True)
@@ -2698,10 +2708,14 @@ class ValveTracker(QtWidgets.QMainWindow):
                 vy = extras.get("vy")
                 vz = extras.get("vz")
 
+            t = int(self.slider.value()) - 1
             contour_xy = self._roi_contour_points((self.Npix, self.Npix))
             if plane_n is not None and contour_xy is not None and vx is not None and vy is not None and vz is not None:
-                n_surface = self._surface_normal_from_contour(plane_n, contour_xy)
-                Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+                n_surface = self._surface_normal_for_phase(t, plane_n, contour_xy)
+                if n_surface is not None:
+                    Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+                else:
+                    Vn_surface = Vn
             else:
                 Vn_surface = Vn
 
@@ -2846,8 +2860,11 @@ class ValveTracker(QtWidgets.QMainWindow):
 
             contour_xy = self._roi_contour_points((self.Npix, self.Npix), t=t)
             if plane_n is not None and contour_xy is not None and vx is not None and vy is not None and vz is not None:
-                n_surface = self._surface_normal_from_contour(plane_n, contour_xy)
-                Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+                n_surface = self._surface_normal_for_phase(t, plane_n, contour_xy)
+                if n_surface is not None:
+                    Vn_surface = vx * n_surface[0] + vy * n_surface[1] + vz * n_surface[2]
+                else:
+                    Vn_surface = Vn
             else:
                 Vn_surface = Vn
 
@@ -3051,6 +3068,17 @@ class ValveTracker(QtWidgets.QMainWindow):
                 n *= -1.0
 
         return n
+
+    def _surface_normal_for_phase(
+        self, t: int, plane_n: np.ndarray, contour_xy: np.ndarray
+    ) -> Optional[np.ndarray]:
+        if 0 <= t < len(self._confirmed_surface_normals):
+            confirmed = self._confirmed_surface_normals[t]
+            if confirmed is not None:
+                return confirmed
+        if plane_n is None or contour_xy is None:
+            return None
+        return self._surface_normal_from_contour(plane_n, contour_xy)
 
     def _normalize_uint8(self, image: np.ndarray) -> np.ndarray:
         if image.dtype == np.uint8:
@@ -3413,6 +3441,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             contour_voxel = self._streamline_contour_voxel(t)
             player.view.update_contour(contour_voxel, mask.shape)
             self._update_streamline_player_isosurface(player, t)
+            self._update_streamline_player_mask_isosurface(player, t)
             player.view.set_particle_step(step)
             player.view.pause_particle_animation()
             return
@@ -3447,6 +3476,7 @@ class ValveTracker(QtWidgets.QMainWindow):
         player.view.update_streamlines(streamlines, mask.shape)
         player.view.update_contour(contour_voxel, mask.shape)
         self._update_streamline_player_isosurface(player, t)
+        self._update_streamline_player_mask_isosurface(player, t)
 
     def _current_vel_mask(self, t: int) -> Optional[np.ndarray]:
         if self._vel_mask is None:
@@ -3471,6 +3501,17 @@ class ValveTracker(QtWidgets.QMainWindow):
         count = int(np.count_nonzero(np.isfinite(volume) & (volume > threshold)))
         volume_ml = float(count * self._voxel_volume_m3 * 1e6)
         player.set_iso_volume(volume_ml)
+
+    def _update_streamline_player_mask_isosurface(self, player, t: int) -> None:
+        if not hasattr(player, "mask_isosurface_enabled") or not player.mask_isosurface_enabled():
+            player.view.update_mask_isosurface(None, enabled=False)
+            return
+        mask = self._current_vel_mask(t)
+        if mask is None or not np.any(mask):
+            player.view.update_mask_isosurface(None, enabled=False)
+            return
+        volume = np.asarray(mask, dtype=np.float32)
+        player.view.update_mask_isosurface(volume, enabled=True)
 
     def _compute_streamlines(self, vel_t: np.ndarray, mask: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         max_seeds = 200
@@ -4196,7 +4237,26 @@ class ValveTracker(QtWidgets.QMainWindow):
         cur = int(self.slider.value()) - 1
         if 0 <= cur < len(self.line_angle):
             self.line_angle[cur] = float(self.spin_line_angle.value())
+            self._confirmed_surface_normals[cur] = None
         self.set_phase(cur)
+        self.compute_current(update_only=True)
+
+    def on_line_confirm(self) -> None:
+        t = int(self.slider.value()) - 1
+        if t < 0 or t >= self.Nt:
+            return
+        try:
+            _Ipcm, _Ivelmag, _Vn, _spmm, extras = self.reslice_for_phase(t)
+        except Exception:
+            return
+        if not isinstance(extras, dict):
+            return
+        plane_n = extras.get("plane_n")
+        contour_xy = self._roi_contour_points((self.Npix, self.Npix), t=t)
+        if plane_n is None or contour_xy is None:
+            return
+        n_surface = self._surface_normal_from_contour(plane_n, contour_xy)
+        self._confirmed_surface_normals[t] = n_surface
         self.compute_current(update_only=True)
 
     def _apply_brush_at(self, view: pg.ViewBox, pos: QtCore.QPointF):
@@ -4632,6 +4692,7 @@ class ValveTracker(QtWidgets.QMainWindow):
             line_angle=self.line_angle,
             roi_state=self.roi_state,
             roi_locked=self.roi_locked,
+            surface_normals=self._confirmed_surface_normals,
             metrics_Q=self.metrics_Q,
             metrics_Vpk=self.metrics_Vpk,
             metrics_Vmn=self.metrics_Vmn,

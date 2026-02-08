@@ -22,6 +22,7 @@ def save_tracking_state_h5(
     line_angle: list,
     roi_state: list,
     roi_locked: list,
+    surface_normals: Optional[list],
     metrics_Q: np.ndarray,
     metrics_Vpk: np.ndarray,
     metrics_Vmn: np.ndarray,
@@ -74,6 +75,15 @@ def save_tracking_state_h5(
         g.create_dataset("line_angle", data=np.asarray(line_angle, dtype=np.float64), compression="gzip")
         g.create_dataset("roi_state_json", data=rs, compression="gzip")
         g.create_dataset("roi_locked", data=locked, compression="gzip")
+        if surface_normals is not None:
+            normals = np.full((Nt, 3), np.nan, dtype=np.float64)
+            for t in range(min(Nt, len(surface_normals))):
+                val = surface_normals[t]
+                if val is None:
+                    continue
+                arr = np.array(val, dtype=np.float64).reshape(3)
+                normals[t] = arr
+            g.create_dataset("surface_normals", data=normals, compression="gzip")
         g.create_dataset("metrics_Q", data=np.asarray(metrics_Q, dtype=np.float64), compression="gzip")
         g.create_dataset("metrics_Vpk", data=np.asarray(metrics_Vpk, dtype=np.float64), compression="gzip")
         g.create_dataset("metrics_Vmn", data=np.asarray(metrics_Vmn, dtype=np.float64), compression="gzip")
@@ -153,6 +163,11 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
                 if "/state/line_angle" in f
                 else None
             )
+            surface_normals = (
+                np.array(f["/state/surface_normals"][()], dtype=np.float64)
+                if "/state/surface_normals" in f
+                else None
+            )
             segment_ref_angle = (
                 np.array(f["/state/segment_ref_angle"][()], dtype=np.float64)
                 if "/state/segment_ref_angle" in f
@@ -205,6 +220,8 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         Nt = min(expected_Nt, ln.shape[0], Q.shape[0], Vpk.shape[0], Vmn.shape[0], rs.shape[0])
         if line_angle is not None:
             Nt = min(Nt, line_angle.shape[0])
+        if surface_normals is not None:
+            Nt = min(Nt, surface_normals.shape[0])
         if segment_ref_angle is not None:
             Nt = min(Nt, segment_ref_angle.shape[0])
         if segment_anchor_xy is not None:
@@ -230,6 +247,12 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         if line_angle is not None:
             for t in range(Nt):
                 out_angle[t] = float(line_angle[t])
+        out_surface_normals = [None] * expected_Nt
+        if surface_normals is not None:
+            for t in range(Nt):
+                arr = np.array(surface_normals[t], dtype=np.float64).reshape(3)
+                if np.all(np.isfinite(arr)):
+                    out_surface_normals[t] = arr.copy()
         out_segment_ref = [None] * expected_Nt
         if segment_ref_angle is not None:
             for t in range(Nt):
@@ -272,6 +295,7 @@ def load_tracking_state_h5(path: str, expected_Nt: int) -> Optional[dict]:
         return {
             "line_norm": out_line,
             "line_angle": out_angle,
+            "surface_normals": out_surface_normals,
             "segment_ref_angle": out_segment_ref,
             "segment_anchor_xy": out_anchor,
             "segment_count_list": out_segment_count,

@@ -158,6 +158,9 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._iso_volume = None
         self._iso_threshold = 0.0
         self._iso_enabled = False
+        self._mask_iso_item = None
+        self._mask_iso_volume = None
+        self._mask_iso_enabled = False
         self._suppress_camera_signal = False
         self._prepared_streamlines = []
         self._show_streamlines = True
@@ -219,6 +222,7 @@ class StreamlineWindow(QtWidgets.QWidget):
         self._particle_item = None
         self._contour_item = None
         self._iso_item = None
+        self._mask_iso_item = None
         self._rebuilding_view = True
         try:
             self._build_view()
@@ -230,6 +234,8 @@ class StreamlineWindow(QtWidgets.QWidget):
                 self.update_contour(self._contour_points, self._volume_shape)
             if self._iso_volume is not None and self._iso_enabled:
                 self.update_isosurface(self._iso_volume, self._iso_threshold, enabled=True)
+            if self._mask_iso_volume is not None and self._mask_iso_enabled:
+                self.update_mask_isosurface(self._mask_iso_volume, enabled=True)
             if self._particles_enabled and self._particle_tracks:
                 self._update_particles(self._particle_tracks)
         finally:
@@ -311,6 +317,15 @@ class StreamlineWindow(QtWidgets.QWidget):
         except Exception:
             pass
         self._iso_item = None
+
+    def clear_mask_isosurface(self):
+        if self._mask_iso_item is None:
+            return
+        try:
+            self.view.removeItem(self._mask_iso_item)
+        except Exception:
+            pass
+        self._mask_iso_item = None
 
     def update_streamlines(self, streamlines, volume_shape, ensure_view: bool = True):
         if ensure_view:
@@ -609,13 +624,41 @@ class StreamlineWindow(QtWidgets.QWidget):
         mesh = gl.MeshData(vertexes=verts, faces=faces)
         self._iso_item = gl.GLMeshItem(
             meshdata=mesh,
-            color=(0.2, 0.8, 1.0, 0.25),
+            color=(1.0, 0.85, 0.2, 0.6),
             smooth=False,
             shader="shaded",
-            drawEdges=False,
+            drawEdges=True,
+            edgeColor=(1.0, 1.0, 1.0, 0.8),
         )
         self._iso_item.setGLOptions("translucent")
         self.view.addItem(self._iso_item)
+
+    def update_mask_isosurface(self, volume, enabled: bool = True):
+        self._mask_iso_enabled = bool(enabled)
+        self._mask_iso_volume = None if volume is None else np.asarray(volume, dtype=np.float32)
+        self.clear_mask_isosurface()
+        if not self._mask_iso_enabled or self._mask_iso_volume is None:
+            return
+        if self._mask_iso_volume.ndim != 3:
+            return
+        self._ensure_view()
+        iso_data = np.transpose(self._mask_iso_volume, (1, 0, 2))
+        if not np.any(np.isfinite(iso_data)):
+            return
+        verts, faces = pg.isosurface(iso_data, level=0.5)
+        if verts.size == 0 or faces.size == 0:
+            return
+        mesh = gl.MeshData(vertexes=verts, faces=faces)
+        self._mask_iso_item = gl.GLMeshItem(
+            meshdata=mesh,
+            color=(0.2, 1.0, 0.4, 0.55),
+            smooth=False,
+            shader="shaded",
+            drawEdges=True,
+            edgeColor=(1.0, 1.0, 1.0, 0.7),
+        )
+        self._mask_iso_item.setGLOptions("translucent")
+        self.view.addItem(self._mask_iso_item)
 
     def _update_view_center(self, volume_shape):
         if volume_shape is None:
@@ -872,6 +915,10 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
         self.iso_check.setChecked(False)
         self.iso_check.toggled.connect(lambda _val: self.phase_changed.emit(self._phase))
         iso_row.addWidget(self.iso_check)
+        self.mask_iso_check = QtWidgets.QCheckBox("Show mask isosurface", self)
+        self.mask_iso_check.setChecked(False)
+        self.mask_iso_check.toggled.connect(lambda _val: self.phase_changed.emit(self._phase))
+        iso_row.addWidget(self.mask_iso_check)
         iso_row.addWidget(QtWidgets.QLabel("Threshold"))
         self.iso_threshold_spin = QtWidgets.QDoubleSpinBox(self)
         self.iso_threshold_spin.setRange(0.0, 1e6)
@@ -983,6 +1030,9 @@ class StreamlinePlayerWindow(QtWidgets.QWidget):
 
     def isosurface_threshold(self) -> float:
         return float(self.iso_threshold_spin.value())
+
+    def mask_isosurface_enabled(self) -> bool:
+        return self.mask_iso_check.isChecked()
 
     def set_iso_volume(self, volume_ml: Optional[float]) -> None:
         if volume_ml is None or not np.isfinite(volume_ml):
