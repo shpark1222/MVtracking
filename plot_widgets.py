@@ -624,10 +624,11 @@ class StreamlineWindow(QtWidgets.QWidget):
         mesh = gl.MeshData(vertexes=verts, faces=faces)
         self._iso_item = gl.GLMeshItem(
             meshdata=mesh,
-            color=(0.2, 0.8, 1.0, 0.25),
+            color=(1.0, 0.85, 0.2, 0.6),
             smooth=False,
             shader="shaded",
-            drawEdges=False,
+            drawEdges=True,
+            edgeColor=(1.0, 1.0, 1.0, 0.8),
         )
         self._iso_item.setGLOptions("translucent")
         self.view.addItem(self._iso_item)
@@ -650,10 +651,11 @@ class StreamlineWindow(QtWidgets.QWidget):
         mesh = gl.MeshData(vertexes=verts, faces=faces)
         self._mask_iso_item = gl.GLMeshItem(
             meshdata=mesh,
-            color=(0.2, 1.0, 0.4, 0.18),
+            color=(0.2, 1.0, 0.4, 0.55),
             smooth=False,
             shader="shaded",
-            drawEdges=False,
+            drawEdges=True,
+            edgeColor=(1.0, 1.0, 1.0, 0.7),
         )
         self._mask_iso_item.setGLOptions("translucent")
         self.view.addItem(self._mask_iso_item)
