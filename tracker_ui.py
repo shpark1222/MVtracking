@@ -67,7 +67,7 @@ class ValveTracker(QtWidgets.QMainWindow):
 
         # ------------------------------------------------------------------
         # FIX: normalize pcmra/vel axis to (row, col, slice, ...)
-        # If pack was saved as (col, row, slice, ...), transpose once here
+        # Input may be stored as (col, row, slice, ...), so transpose once here
         # so you do NOT need to use YXZ swap later.
         # ------------------------------------------------------------------
         try:
@@ -82,13 +82,13 @@ class ValveTracker(QtWidgets.QMainWindow):
                 # (vx, vy, vz)
                 pack.vel = pack.vel[:, :, :, [0, 1, 2], :]
 
-            # optional scalar volumes that follow spatial axes
+            # optional scalar volumes: apply the same col/row normalization rule
             if getattr(pack, "ke", None) is not None and pack.ke.ndim == 4:
-                pack.ke = np.transpose(pack.ke, (0, 1, 2, 3))
+                pack.ke = np.transpose(pack.ke, (1, 0, 2, 3))
             if getattr(pack, "vortmag", None) is not None and pack.vortmag.ndim == 4:
-                pack.vortmag = np.transpose(pack.vortmag, (0, 1, 2, 3))
+                pack.vortmag = np.transpose(pack.vortmag, (1, 0, 2, 3))
             if getattr(pack, "qcriterion", None) is not None and pack.qcriterion.ndim == 4:
-                pack.qcriterion = np.transpose(pack.qcriterion, (0, 1, 2, 3))
+                pack.qcriterion = np.transpose(pack.qcriterion, (1, 0, 2, 3))
 
         except Exception:
             pass
